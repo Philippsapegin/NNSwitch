@@ -1,19 +1,16 @@
-using System.Collections.Specialized;
-using System.Runtime.InteropServices;
 using INSwitch.Interop;
 using INSwitch.Models;
 
 namespace INSwitch.Services;
 
-internal enum TextSwitchMode
-{
-    SelectedText,
-    LastWord,
-    ActiveField
-}
-
 internal sealed class TextSwitchService
 {
+    private const int ModifierReleaseAttempts = 50;
+    private const int ModifierReleaseRetryDelayMs = 10;
+    private const int SelectionDelayMs = 25;
+    private const int LayoutActivationDelayMs = 35;
+    private const int PasteCompletionDelayMs = 100;
+
     private readonly Func<AppSettings> _getSettings;
     private readonly Func<IReadOnlyList<KeyboardLayoutDescriptor>> _getLayouts;
     private readonly Action<string, string> _notify;
@@ -46,7 +43,7 @@ internal sealed class TextSwitchService
         {
             var foregroundWindow = NativeMethods.GetForegroundWindow();
             var layouts = _getLayouts();
-            var source = KeyboardLayoutService.GetCurrent(layouts);
+            var source = KeyboardLayoutService.GetForWindow(foregroundWindow, layouts);
             if (foregroundWindow == IntPtr.Zero || source is null)
             {
                 NotifyFailure(showFailure, "No active text field was found.");
@@ -72,9 +69,15 @@ internal sealed class TextSwitchService
                 return false;
             }
 
-            snapshot = ClipboardSnapshot.Capture();
+            snapshot = await ClipboardService.TryCaptureAsync();
+            if (snapshot is null)
+            {
+                NotifyFailure(showFailure, "The clipboard is currently busy.");
+                return false;
+            }
+
             var marker = $"INSWITCH:{Guid.NewGuid():N}";
-            if (!TrySetClipboardText(marker))
+            if (!await ClipboardService.TrySetTextAsync(marker))
             {
                 NotifyFailure(showFailure, "The clipboard is currently busy.");
                 return false;
@@ -91,18 +94,18 @@ internal sealed class TextSwitchService
                         NativeMethods.VkControl,
                         NativeMethods.VkShift,
                         NativeMethods.VkLeft);
-                    await Task.Delay(25);
+                    await Task.Delay(SelectionDelayMs);
                     NativeMethods.SendChord(NativeMethods.VkControl, NativeMethods.VkX);
                     break;
 
                 case TextSwitchMode.ActiveField:
                     NativeMethods.SendChord(NativeMethods.VkControl, NativeMethods.VkA);
-                    await Task.Delay(25);
+                    await Task.Delay(SelectionDelayMs);
                     NativeMethods.SendChord(NativeMethods.VkControl, NativeMethods.VkC);
                     break;
             }
 
-            var originalText = await WaitForCopiedTextAsync(marker);
+            var originalText = await ClipboardService.WaitForChangedTextAsync(marker);
             if (string.IsNullOrEmpty(originalText))
             {
                 NotifyFailure(
@@ -114,14 +117,14 @@ internal sealed class TextSwitchService
             }
 
             var convertedText = KeyboardLayoutService.ConvertText(originalText, source, target);
-            if (!TrySetClipboardText(convertedText))
+            if (!await ClipboardService.TrySetTextAsync(convertedText))
             {
                 NotifyFailure(showFailure, "The clipboard is currently busy.");
                 return false;
             }
 
             KeyboardLayoutService.ActivateForForegroundWindow(target);
-            await Task.Delay(35);
+            await Task.Delay(LayoutActivationDelayMs);
 
             if (NativeMethods.GetForegroundWindow() != foregroundWindow)
             {
@@ -130,7 +133,7 @@ internal sealed class TextSwitchService
             }
 
             NativeMethods.SendChord(NativeMethods.VkControl, NativeMethods.VkV);
-            await Task.Delay(100);
+            await Task.Delay(PasteCompletionDelayMs);
             return true;
         }
         catch (Exception exception)
@@ -141,15 +144,29 @@ internal sealed class TextSwitchService
         }
         finally
         {
-            snapshot?.Restore();
-            snapshot?.Dispose();
+            if (snapshot is not null)
+            {
+                try
+                {
+                    await snapshot.RestoreAsync();
+                }
+                catch (Exception exception)
+                {
+                    ErrorLog.Write(exception);
+                }
+                finally
+                {
+                    snapshot.Dispose();
+                }
+            }
+
             _busy = false;
         }
     }
 
     private static async Task WaitForModifierKeysAsync()
     {
-        for (var attempt = 0; attempt < 50; attempt++)
+        for (var attempt = 0; attempt < ModifierReleaseAttempts; attempt++)
         {
             if (!NativeMethods.IsKeyDown(NativeMethods.VkControl) &&
                 !NativeMethods.IsKeyDown(NativeMethods.VkShift) &&
@@ -160,54 +177,8 @@ internal sealed class TextSwitchService
                 return;
             }
 
-            await Task.Delay(10);
+            await Task.Delay(ModifierReleaseRetryDelayMs);
         }
-    }
-
-    private static async Task<string?> WaitForCopiedTextAsync(string marker)
-    {
-        for (var attempt = 0; attempt < 25; attempt++)
-        {
-            await Task.Delay(20);
-
-            try
-            {
-                if (!Clipboard.ContainsText(TextDataFormat.UnicodeText))
-                {
-                    continue;
-                }
-
-                var text = Clipboard.GetText(TextDataFormat.UnicodeText);
-                if (!text.Equals(marker, StringComparison.Ordinal))
-                {
-                    return text;
-                }
-            }
-            catch (ExternalException)
-            {
-                // Another process briefly owns the clipboard; retry.
-            }
-        }
-
-        return null;
-    }
-
-    private static bool TrySetClipboardText(string text)
-    {
-        for (var attempt = 0; attempt < 10; attempt++)
-        {
-            try
-            {
-                Clipboard.SetText(text, TextDataFormat.UnicodeText);
-                return true;
-            }
-            catch (ExternalException)
-            {
-                Thread.Sleep(15);
-            }
-        }
-
-        return false;
     }
 
     private void NotifyFailure(bool showFailure, string message)
@@ -215,128 +186,6 @@ internal sealed class TextSwitchService
         if (showFailure)
         {
             _notify("NN Switch", message);
-        }
-    }
-}
-
-internal sealed class ClipboardSnapshot : IDisposable
-{
-    private readonly DataObject? _data;
-    private readonly List<IDisposable> _ownedData;
-    private bool _disposed;
-
-    private ClipboardSnapshot(DataObject? data, List<IDisposable> ownedData)
-    {
-        _data = data;
-        _ownedData = ownedData;
-    }
-
-    internal static ClipboardSnapshot Capture()
-    {
-        var snapshot = new DataObject();
-        var copiedFormats = 0;
-        var ownedData = new List<IDisposable>();
-
-        try
-        {
-            var current = Clipboard.GetDataObject();
-            if (current is null)
-            {
-                return new ClipboardSnapshot(null, ownedData);
-            }
-
-            foreach (var format in current.GetFormats(autoConvert: false))
-            {
-                try
-                {
-                    var data = CloneClipboardData(current.GetData(format, autoConvert: false), ownedData);
-                    if (data is null)
-                    {
-                        continue;
-                    }
-
-                    snapshot.SetData(format, autoConvert: false, data);
-                    copiedFormats++;
-                }
-                catch
-                {
-                    // Unsupported clipboard formats are skipped.
-                }
-            }
-        }
-        catch (ExternalException)
-        {
-            return new ClipboardSnapshot(null, ownedData);
-        }
-
-        return new ClipboardSnapshot(copiedFormats > 0 ? snapshot : null, ownedData);
-    }
-
-    internal void Restore()
-    {
-        if (_data is null)
-        {
-            return;
-        }
-
-        for (var attempt = 0; attempt < 10; attempt++)
-        {
-            try
-            {
-                Clipboard.SetDataObject(_data, copy: true);
-                return;
-            }
-            catch (ExternalException)
-            {
-                Thread.Sleep(15);
-            }
-        }
-    }
-
-    public void Dispose()
-    {
-        if (_disposed)
-        {
-            return;
-        }
-
-        _disposed = true;
-        foreach (var item in _ownedData)
-        {
-            item.Dispose();
-        }
-    }
-
-    private static object? CloneClipboardData(object? data, ICollection<IDisposable> ownedData)
-    {
-        switch (data)
-        {
-            case null:
-                return null;
-            case Bitmap bitmap:
-            {
-                var clone = new Bitmap(bitmap);
-                ownedData.Add(clone);
-                return clone;
-            }
-            case MemoryStream stream:
-            {
-                var clone = new MemoryStream(stream.ToArray());
-                ownedData.Add(clone);
-                return clone;
-            }
-            case byte[] bytes:
-                return bytes.ToArray();
-            case string[] strings:
-                return strings.ToArray();
-            case StringCollection files:
-            {
-                var clone = new StringCollection();
-                clone.AddRange(files.Cast<string>().ToArray());
-                return clone;
-            }
-            default:
-                return data;
         }
     }
 }

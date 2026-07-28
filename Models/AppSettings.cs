@@ -81,7 +81,9 @@ internal sealed class TargetLayoutHotkeys
 
 internal sealed class AppSettings
 {
-    public bool AutoSwitch { get; set; }
+    internal const int CurrentSchemaVersion = 1;
+
+    public int SchemaVersion { get; set; }
 
     public HotkeySettings Hotkeys { get; set; } = HotkeySettings.Defaults;
 

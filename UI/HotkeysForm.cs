@@ -69,13 +69,17 @@ internal sealed class HotkeysForm : Form
             Margin = new Padding(0, 4, 0, 0)
         };
 
-        var defaultsButton = CreateButton("Defaults", (_, _) => RestoreDefaults());
-        var cancelButton = CreateButton("Cancel", (_, _) =>
+        var buttonSize = new Size(92, 32);
+        var defaultsButton = DarkTheme.CreateButton(
+            "Defaults",
+            (_, _) => RestoreDefaults(),
+            buttonSize);
+        var cancelButton = DarkTheme.CreateButton("Cancel", (_, _) =>
         {
             DialogResult = DialogResult.Cancel;
             Close();
-        });
-        var saveButton = CreateButton("Save", SaveButtonOnClick);
+        }, buttonSize);
+        var saveButton = DarkTheme.CreateButton("Save", SaveButtonOnClick, buttonSize);
 
         var buttons = new FlowLayoutPanel
         {
@@ -226,9 +230,8 @@ internal sealed class HotkeysForm : Form
         {
             var rowIndex = _grid.Rows.Add(
                 row.Scope,
-                row.Action,
+                row.Action.DisplayName,
                 HotkeyFormatter.Format(row.Binding));
-            _grid.Rows[rowIndex].Tag = row;
         }
     }
 
@@ -262,13 +265,7 @@ internal sealed class HotkeysForm : Form
         foreach (var row in _rows)
         {
             row.Binding = row.TargetLayoutId is null
-                ? row.Mode switch
-                {
-                    TextSwitchMode.SelectedText => defaults.SelectedText.Clone(),
-                    TextSwitchMode.LastWord => defaults.LastWord.Clone(),
-                    TextSwitchMode.ActiveField => defaults.ActiveField.Clone(),
-                    _ => new HotkeyBinding()
-                }
+                ? row.Action.GetBinding(defaults).Clone()
                 : new HotkeyBinding();
         }
 
@@ -283,8 +280,7 @@ internal sealed class HotkeysForm : Form
         var duplicate = _rows
             .Where(row => row.Binding.IsConfigured)
             .GroupBy(
-                row => $"{(uint)row.Binding.Modifiers}:{(int)row.Binding.Key}",
-                StringComparer.Ordinal)
+                row => (row.Binding.Modifiers, row.Binding.Key))
             .FirstOrDefault(group => group.Count() > 1);
 
         if (duplicate is not null)
@@ -296,21 +292,26 @@ internal sealed class HotkeysForm : Form
 
         var result = new HotkeySettings
         {
-            SelectedText = FindGeneral(TextSwitchMode.SelectedText).Binding.Clone(),
-            LastWord = FindGeneral(TextSwitchMode.LastWord).Binding.Clone(),
-            ActiveField = FindGeneral(TextSwitchMode.ActiveField).Binding.Clone(),
             TargetLayouts = new Dictionary<string, TargetLayoutHotkeys>(
                 StringComparer.OrdinalIgnoreCase)
         };
 
+        foreach (var action in TextSwitchActions.All)
+        {
+            action.SetBinding(result, FindGeneral(action.Mode).Binding.Clone());
+        }
+
         foreach (var layout in _layouts)
         {
-            result.TargetLayouts[layout.Id] = new TargetLayoutHotkeys
+            var targetHotkeys = new TargetLayoutHotkeys();
+            foreach (var action in TextSwitchActions.All)
             {
-                SelectedText = FindTarget(layout.Id, TextSwitchMode.SelectedText).Binding.Clone(),
-                LastWord = FindTarget(layout.Id, TextSwitchMode.LastWord).Binding.Clone(),
-                ActiveField = FindTarget(layout.Id, TextSwitchMode.ActiveField).Binding.Clone()
-            };
+                action.SetBinding(
+                    targetHotkeys,
+                    FindTarget(layout.Id, action.Mode).Binding.Clone());
+            }
+
+            result.TargetLayouts[layout.Id] = targetHotkeys;
         }
 
         Result = result;
@@ -319,12 +320,12 @@ internal sealed class HotkeysForm : Form
     }
 
     private HotkeyRow FindGeneral(TextSwitchMode mode) =>
-        _rows.Single(row => row.TargetLayoutId is null && row.Mode == mode);
+        _rows.Single(row => row.TargetLayoutId is null && row.Action.Mode == mode);
 
     private HotkeyRow FindTarget(string layoutId, TextSwitchMode mode) =>
         _rows.Single(row =>
             row.TargetLayoutId?.Equals(layoutId, StringComparison.OrdinalIgnoreCase) == true &&
-            row.Mode == mode);
+            row.Action.Mode == mode);
 
     private void RefreshHotkeyCells()
     {
@@ -341,80 +342,59 @@ internal sealed class HotkeysForm : Form
         HotkeySettings current,
         IReadOnlyList<KeyboardLayoutDescriptor> layouts)
     {
-        var rows = new List<HotkeyRow>
+        var rows = new List<HotkeyRow>();
+        for (var index = 0; index < TextSwitchActions.All.Count; index++)
         {
-            new("Mapped target", "Selected text", TextSwitchMode.SelectedText, null, current.SelectedText.Clone()),
-            new(string.Empty, "Last written word", TextSwitchMode.LastWord, null, current.LastWord.Clone()),
-            new(string.Empty, "Active text field", TextSwitchMode.ActiveField, null, current.ActiveField.Clone())
-        };
+            var action = TextSwitchActions.All[index];
+            rows.Add(new HotkeyRow(
+                index == 0 ? "Mapped target" : string.Empty,
+                action,
+                null,
+                action.GetBinding(current).Clone()));
+        }
 
         foreach (var layout in layouts)
         {
             var target = current.TargetLayouts.TryGetValue(layout.Id, out var configured)
                 ? configured
                 : new TargetLayoutHotkeys();
-            rows.Add(new HotkeyRow(
-                layout.DisplayName,
-                "Selected text",
-                TextSwitchMode.SelectedText,
-                layout.Id,
-                target.SelectedText.Clone()));
-            rows.Add(new HotkeyRow(
-                string.Empty,
-                "Last written word",
-                TextSwitchMode.LastWord,
-                layout.Id,
-                target.LastWord.Clone()));
-            rows.Add(new HotkeyRow(
-                string.Empty,
-                "Active text field",
-                TextSwitchMode.ActiveField,
-                layout.Id,
-                target.ActiveField.Clone()));
+            for (var index = 0; index < TextSwitchActions.All.Count; index++)
+            {
+                var action = TextSwitchActions.All[index];
+                rows.Add(new HotkeyRow(
+                    index == 0 ? layout.DisplayName : string.Empty,
+                    action,
+                    layout.Id,
+                    action.GetBinding(target).Clone()));
+            }
         }
 
         return rows;
-    }
-
-    private static Button CreateButton(string text, EventHandler onClick)
-    {
-        var button = new Button
-        {
-            Text = text,
-            AutoSize = true,
-            MinimumSize = new Size(92, 32),
-            Margin = new Padding(7, 0, 0, 0)
-        };
-        button.Click += onClick;
-        return button;
     }
 
     private sealed class HotkeyRow
     {
         internal HotkeyRow(
             string scope,
-            string action,
-            TextSwitchMode mode,
+            TextSwitchAction action,
             string? targetLayoutId,
             HotkeyBinding binding)
         {
             Scope = scope;
             Action = action;
-            Mode = mode;
             TargetLayoutId = targetLayoutId;
             Binding = binding;
         }
 
         internal string Scope { get; }
 
-        internal string Action { get; }
-
-        internal TextSwitchMode Mode { get; }
+        internal TextSwitchAction Action { get; }
 
         internal string? TargetLayoutId { get; }
 
         internal HotkeyBinding Binding { get; set; }
 
-        internal string FullName => string.IsNullOrEmpty(Scope) ? Action : $"{Scope}: {Action}";
+        internal string FullName =>
+            string.IsNullOrEmpty(Scope) ? Action.DisplayName : $"{Scope}: {Action.DisplayName}";
     }
 }

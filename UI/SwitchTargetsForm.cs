@@ -5,7 +5,6 @@ namespace INSwitch.UI;
 
 internal sealed class SwitchTargetsForm : Form
 {
-    private readonly IReadOnlyList<KeyboardLayoutDescriptor> _layouts;
     private readonly DataGridView _grid;
 
     internal Dictionary<string, string> Result { get; private set; }
@@ -14,7 +13,6 @@ internal sealed class SwitchTargetsForm : Form
         IReadOnlyList<KeyboardLayoutDescriptor> layouts,
         IReadOnlyDictionary<string, string> currentTargets)
     {
-        _layouts = layouts;
         Result = new Dictionary<string, string>(currentTargets, StringComparer.OrdinalIgnoreCase);
 
         Text = "Switch to — NN Switch";
@@ -53,7 +51,15 @@ internal sealed class SwitchTargetsForm : Form
             EditMode = DataGridViewEditMode.EditOnEnter,
             RowTemplate = { Height = 34 }
         };
-        _grid.DataError += (_, _) => { };
+        _grid.DataError += (_, eventArgs) =>
+        {
+            if (eventArgs.Exception is not null)
+            {
+                ErrorLog.Write(eventArgs.Exception);
+            }
+
+            eventArgs.ThrowException = false;
+        };
         _grid.CellClick += (_, eventArgs) =>
         {
             if (eventArgs.RowIndex < 0 || eventArgs.ColumnIndex != 1)
@@ -110,12 +116,13 @@ internal sealed class SwitchTargetsForm : Form
             _grid.Rows[rowIndex].Tag = layout.Id;
         }
 
-        var cancelButton = CreateButton("Cancel", (_, _) =>
+        var buttonSize = new Size(105, 34);
+        var cancelButton = DarkTheme.CreateButton("Cancel", (_, _) =>
         {
             DialogResult = DialogResult.Cancel;
             Close();
-        });
-        var saveButton = CreateButton("Save", SaveButtonOnClick);
+        }, buttonSize);
+        var saveButton = DarkTheme.CreateButton("Save", SaveButtonOnClick, buttonSize);
 
         var buttons = new FlowLayoutPanel
         {
@@ -149,19 +156,6 @@ internal sealed class SwitchTargetsForm : Form
         DarkTheme.Apply(this);
         DarkTheme.StyleGrid(_grid);
         DarkTheme.EnableAccentHover(saveButton);
-    }
-
-    private static Button CreateButton(string text, EventHandler onClick)
-    {
-        var button = new Button
-        {
-            Text = text,
-            AutoSize = true,
-            MinimumSize = new Size(105, 34),
-            Margin = new Padding(8, 0, 0, 0)
-        };
-        button.Click += onClick;
-        return button;
     }
 
     private void SaveButtonOnClick(object? sender, EventArgs eventArgs)

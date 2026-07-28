@@ -10,34 +10,69 @@ internal sealed class SettingsStore
         WriteIndented = true
     };
 
-    private readonly string _settingsDirectory = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "NN Switch");
+    private readonly string _settingsDirectory;
+    private readonly string _legacySettingsDirectory;
+    private readonly Action<Exception> _logError;
 
     private string SettingsPath => Path.Combine(_settingsDirectory, "settings.json");
 
+    internal SettingsStore(
+        string? settingsDirectory = null,
+        string? legacySettingsDirectory = null,
+        Action<Exception>? logError = null)
+    {
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        _settingsDirectory = settingsDirectory ?? Path.Combine(appData, "NN Switch");
+        _legacySettingsDirectory = legacySettingsDirectory ?? Path.Combine(appData, "ИN Switch");
+        _logError = logError ?? ErrorLog.Write;
+    }
+
     internal AppSettings Load(IReadOnlyList<KeyboardLayoutDescriptor> layouts)
     {
-        AppSettings settings;
+        var sourcePath = GetSettingsSourcePath();
+        if (sourcePath is null)
+        {
+            var newSettings = new AppSettings();
+            SettingsNormalizer.Normalize(newSettings, layouts);
+            Save(newSettings);
+            return newSettings;
+        }
 
         try
         {
-            var sourcePath = GetSettingsSourcePath();
-            settings = sourcePath is not null
-                ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(sourcePath), JsonOptions) ?? new AppSettings()
-                : new AppSettings();
+            var settings =
+                JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(sourcePath), JsonOptions) ??
+                throw new JsonException("settings.json contains a null root value.");
+            var changed = SettingsNormalizer.Normalize(settings, layouts);
+            if (changed || !sourcePath.Equals(SettingsPath, StringComparison.OrdinalIgnoreCase))
+            {
+                Save(settings);
+            }
+
+            return settings;
+        }
+        catch (JsonException exception)
+        {
+            _logError(exception);
+            var settings = new AppSettings();
+            SettingsNormalizer.Normalize(settings, layouts);
+            if (TryBackUpCorruptSettings(sourcePath))
+            {
+                Save(settings);
+            }
+
+            return settings;
         }
         catch (Exception exception)
         {
-            ErrorLog.Write(exception);
-            settings = new AppSettings();
+            _logError(exception);
+            var settings = new AppSettings();
+            SettingsNormalizer.Normalize(settings, layouts);
+            return settings;
         }
-
-        Normalize(settings, layouts);
-        return settings;
     }
 
-    internal void Save(AppSettings settings)
+    internal bool Save(AppSettings settings)
     {
         try
         {
@@ -45,58 +80,12 @@ internal sealed class SettingsStore
             var temporaryPath = SettingsPath + ".tmp";
             File.WriteAllText(temporaryPath, JsonSerializer.Serialize(settings, JsonOptions));
             File.Move(temporaryPath, SettingsPath, overwrite: true);
+            return true;
         }
         catch (Exception exception)
         {
-            ErrorLog.Write(exception);
-        }
-    }
-
-    internal static void Normalize(AppSettings settings, IReadOnlyList<KeyboardLayoutDescriptor> layouts)
-    {
-        var defaults = HotkeySettings.Defaults;
-        settings.Hotkeys ??= defaults;
-        settings.Hotkeys.SelectedText ??= defaults.SelectedText;
-        settings.Hotkeys.LastWord ??= defaults.LastWord;
-        settings.Hotkeys.ActiveField ??= defaults.ActiveField;
-        settings.Hotkeys.TargetLayouts = settings.Hotkeys.TargetLayouts is null
-            ? new Dictionary<string, TargetLayoutHotkeys>(StringComparer.OrdinalIgnoreCase)
-            : new Dictionary<string, TargetLayoutHotkeys>(
-                settings.Hotkeys.TargetLayouts,
-                StringComparer.OrdinalIgnoreCase);
-
-        settings.SwitchTargets = settings.SwitchTargets is null
-            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            : new Dictionary<string, string>(settings.SwitchTargets, StringComparer.OrdinalIgnoreCase);
-
-        var installedIds = layouts.Select(layout => layout.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var staleId in settings.SwitchTargets.Keys.Where(id => !installedIds.Contains(id)).ToList())
-        {
-            settings.SwitchTargets.Remove(staleId);
-        }
-
-        foreach (var layout in layouts)
-        {
-            if (settings.SwitchTargets.ContainsKey(layout.Id))
-            {
-                continue;
-            }
-
-            settings.SwitchTargets[layout.Id] = ChooseDefaultTarget(layout, layouts)?.Id ?? string.Empty;
-        }
-
-        foreach (var layout in layouts)
-        {
-            if (!settings.Hotkeys.TargetLayouts.TryGetValue(layout.Id, out var targetHotkeys) ||
-                targetHotkeys is null)
-            {
-                settings.Hotkeys.TargetLayouts[layout.Id] = new TargetLayoutHotkeys();
-                continue;
-            }
-
-            targetHotkeys.SelectedText ??= new HotkeyBinding();
-            targetHotkeys.LastWord ??= new HotkeyBinding();
-            targetHotkeys.ActiveField ??= new HotkeyBinding();
+            _logError(exception);
+            return false;
         }
     }
 
@@ -107,38 +96,22 @@ internal sealed class SettingsStore
             return SettingsPath;
         }
 
-        var legacyPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "ИN Switch",
-            "settings.json");
+        var legacyPath = Path.Combine(_legacySettingsDirectory, "settings.json");
         return File.Exists(legacyPath) ? legacyPath : null;
     }
 
-    private static KeyboardLayoutDescriptor? ChooseDefaultTarget(
-        KeyboardLayoutDescriptor source,
-        IReadOnlyList<KeyboardLayoutDescriptor> layouts)
+    private bool TryBackUpCorruptSettings(string sourcePath)
     {
-        var preferredLanguage = source.TwoLetterLanguage switch
+        try
         {
-            "ru" => "en",
-            "en" => "ru",
-            _ => string.Empty
-        };
-
-        if (preferredLanguage.Length > 0)
-        {
-            var preferred = layouts.FirstOrDefault(layout =>
-                !layout.Id.Equals(source.Id, StringComparison.OrdinalIgnoreCase) &&
-                layout.TwoLetterLanguage == preferredLanguage);
-
-            if (preferred is not null)
-            {
-                return preferred;
-            }
+            var timestamp = DateTimeOffset.Now.ToString("yyyyMMdd-HHmmss");
+            File.Copy(sourcePath, $"{sourcePath}.corrupt-{timestamp}", overwrite: false);
+            return true;
         }
-
-        return layouts.FirstOrDefault(layout =>
-            !layout.Id.Equals(source.Id, StringComparison.OrdinalIgnoreCase) &&
-            layout.TwoLetterLanguage != source.TwoLetterLanguage);
+        catch (Exception exception)
+        {
+            _logError(exception);
+            return false;
+        }
     }
 }

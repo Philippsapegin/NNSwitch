@@ -35,21 +35,14 @@ internal sealed class HotkeyManager : NativeWindow, IDisposable
         var errors = new List<string>();
         var nextId = FirstHotkeyId;
 
-        Register(
-            nextId++,
-            new HotkeyCommand(TextSwitchMode.SelectedText, null, "Switch selected text"),
-            settings.SelectedText,
-            errors);
-        Register(
-            nextId++,
-            new HotkeyCommand(TextSwitchMode.LastWord, null, "Switch last word"),
-            settings.LastWord,
-            errors);
-        Register(
-            nextId++,
-            new HotkeyCommand(TextSwitchMode.ActiveField, null, "Switch active text field"),
-            settings.ActiveField,
-            errors);
+        foreach (var action in TextSwitchActions.All)
+        {
+            Register(
+                nextId++,
+                new HotkeyCommand(action.Mode, null, action.CommandName),
+                action.GetBinding(settings),
+                errors);
+        }
 
         foreach (var layout in layouts)
         {
@@ -58,30 +51,17 @@ internal sealed class HotkeyManager : NativeWindow, IDisposable
                 continue;
             }
 
-            Register(
-                nextId++,
-                new HotkeyCommand(
-                    TextSwitchMode.SelectedText,
-                    layout.Id,
-                    $"{layout.DisplayName}: selected text"),
-                targetHotkeys.SelectedText,
-                errors);
-            Register(
-                nextId++,
-                new HotkeyCommand(
-                    TextSwitchMode.LastWord,
-                    layout.Id,
-                    $"{layout.DisplayName}: last word"),
-                targetHotkeys.LastWord,
-                errors);
-            Register(
-                nextId++,
-                new HotkeyCommand(
-                    TextSwitchMode.ActiveField,
-                    layout.Id,
-                    $"{layout.DisplayName}: active text field"),
-                targetHotkeys.ActiveField,
-                errors);
+            foreach (var action in TextSwitchActions.All)
+            {
+                Register(
+                    nextId++,
+                    new HotkeyCommand(
+                        action.Mode,
+                        layout.Id,
+                        $"{layout.DisplayName}: {action.DisplayName.ToLowerInvariant()}"),
+                    action.GetBinding(targetHotkeys),
+                    errors);
+            }
         }
 
         return errors;

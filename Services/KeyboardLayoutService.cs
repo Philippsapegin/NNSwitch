@@ -8,7 +8,6 @@ namespace INSwitch.Services;
 internal sealed record KeyboardLayoutDescriptor(
     string Id,
     string DisplayName,
-    string CultureName,
     string TwoLetterLanguage,
     IntPtr Handle);
 
@@ -28,10 +27,9 @@ internal static class KeyboardLayoutService
             }
 
             var culture = inputLanguage.Culture;
-            var cultureName = culture.Name;
             var language = culture.TwoLetterISOLanguageName.ToLowerInvariant();
             var name = $"{inputLanguage.LayoutName} — {culture.EnglishName}";
-            layouts.Add(new KeyboardLayoutDescriptor(id, name, cultureName, language, inputLanguage.Handle));
+            layouts.Add(new KeyboardLayoutDescriptor(id, name, language, inputLanguage.Handle));
         }
 
         return layouts
@@ -42,12 +40,19 @@ internal static class KeyboardLayoutService
     internal static KeyboardLayoutDescriptor? GetCurrent(IReadOnlyList<KeyboardLayoutDescriptor> layouts)
     {
         var foregroundWindow = NativeMethods.GetForegroundWindow();
-        if (foregroundWindow == IntPtr.Zero)
+        return GetForWindow(foregroundWindow, layouts);
+    }
+
+    internal static KeyboardLayoutDescriptor? GetForWindow(
+        IntPtr windowHandle,
+        IReadOnlyList<KeyboardLayoutDescriptor> layouts)
+    {
+        if (windowHandle == IntPtr.Zero)
         {
             return null;
         }
 
-        var threadId = NativeMethods.GetWindowThreadProcessId(foregroundWindow, IntPtr.Zero);
+        var threadId = NativeMethods.GetWindowThreadProcessId(windowHandle, IntPtr.Zero);
         var handle = NativeMethods.GetKeyboardLayout(threadId);
         var id = GetId(handle);
         return layouts.FirstOrDefault(layout => layout.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
@@ -134,52 +139,6 @@ internal static class KeyboardLayoutService
         }
 
         return result.ToString();
-    }
-
-    internal static string TranslateKey(
-        uint virtualKey,
-        uint scanCode,
-        IntPtr keyboardLayout)
-    {
-        var keyboardState = new byte[256];
-
-        if (NativeMethods.IsKeyDown(NativeMethods.VkShift))
-        {
-            keyboardState[NativeMethods.VkShift] = 0x80;
-        }
-
-        if (NativeMethods.IsKeyDown(NativeMethods.VkControl))
-        {
-            keyboardState[NativeMethods.VkControl] = 0x80;
-        }
-
-        if (NativeMethods.IsKeyDown(NativeMethods.VkMenu))
-        {
-            keyboardState[NativeMethods.VkMenu] = 0x80;
-        }
-
-        if ((NativeMethods.GetKeyState(NativeMethods.VkCapital) & 1) != 0)
-        {
-            keyboardState[NativeMethods.VkCapital] = 0x01;
-        }
-
-        var buffer = new StringBuilder(8);
-        var length = NativeMethods.ToUnicodeEx(
-            virtualKey,
-            scanCode,
-            keyboardState,
-            buffer,
-            buffer.Capacity,
-            0,
-            keyboardLayout);
-
-        if (length < 0)
-        {
-            ClearDeadKey(virtualKey, scanCode, keyboardLayout);
-            return string.Empty;
-        }
-
-        return length > 0 ? buffer.ToString(0, length) : string.Empty;
     }
 
     internal static string GetId(IntPtr handle) =>

@@ -1,4 +1,3 @@
-using System.Drawing.Drawing2D;
 using INSwitch.Interop;
 
 namespace INSwitch.UI;
@@ -6,7 +5,6 @@ namespace INSwitch.UI;
 internal static class DarkTheme
 {
     internal static readonly Color Background = ColorTranslator.FromHtml("#202227");
-    internal static readonly Color Surface = Background;
     internal static readonly Color Button = ColorTranslator.FromHtml("#2B2E34");
     internal static readonly Color Row = ColorTranslator.FromHtml("#191B1F");
     internal static readonly Color AlternateRow = ColorTranslator.FromHtml("#1C1E22");
@@ -30,7 +28,7 @@ internal static class DarkTheme
         menu.ForeColor = Foreground;
         menu.Font = new Font("Segoe UI", 9F);
         menu.Renderer = new DarkToolStripRenderer();
-        menu.ShowImageMargin = true;
+        menu.ShowImageMargin = false;
         ApplyToMenuItems(menu.Items);
     }
 
@@ -86,6 +84,22 @@ internal static class DarkTheme
             button.BackColor = Button;
             button.ForeColor = Foreground;
         };
+    }
+
+    internal static Button CreateButton(
+        string text,
+        EventHandler onClick,
+        Size minimumSize)
+    {
+        var button = new Button
+        {
+            Text = text,
+            AutoSize = true,
+            MinimumSize = minimumSize,
+            Margin = new Padding(7, 0, 0, 0)
+        };
+        button.Click += onClick;
+        return button;
     }
 
     private static void ApplyToControls(Control.ControlCollection controls)
@@ -181,33 +195,6 @@ internal static class DarkTheme
         {
         }
 
-        protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs eventArgs)
-        {
-            var size = Math.Min(16, Math.Max(10, eventArgs.ImageRectangle.Height - 2));
-            var box = new Rectangle(
-                eventArgs.ImageRectangle.X + ((eventArgs.ImageRectangle.Width - size) / 2),
-                eventArgs.ImageRectangle.Y + ((eventArgs.ImageRectangle.Height - size) / 2),
-                size,
-                size);
-
-            using var backgroundBrush = new SolidBrush(Accent);
-            eventArgs.Graphics.FillRectangle(backgroundBrush, box);
-
-            using var pen = new Pen(Background, Math.Max(1.8F, size / 7F))
-            {
-                StartCap = LineCap.Round,
-                EndCap = LineCap.Round
-            };
-            eventArgs.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            eventArgs.Graphics.DrawLines(
-                pen,
-                new[]
-                {
-                    new PointF(box.Left + (size * 0.22F), box.Top + (size * 0.53F)),
-                    new PointF(box.Left + (size * 0.43F), box.Top + (size * 0.73F)),
-                    new PointF(box.Left + (size * 0.80F), box.Top + (size * 0.28F))
-                });
-        }
     }
 
     private sealed class DarkColorTable : ProfessionalColorTable
@@ -226,8 +213,5 @@ internal static class DarkTheme
         public override Color MenuItemPressedGradientEnd => Button;
         public override Color SeparatorDark => Button;
         public override Color SeparatorLight => Button;
-        public override Color CheckBackground => Accent;
-        public override Color CheckSelectedBackground => Accent;
-        public override Color CheckPressedBackground => Accent;
     }
 }

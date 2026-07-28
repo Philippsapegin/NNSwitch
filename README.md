@@ -1,13 +1,11 @@
 # NN Switch
 
 <p align="center">
-  <img src="NN.png" width="160" alt="NN Switch logo">
+  <img src="NN.ico" width="160" alt="NN Switch logo">
 </p>
 
 **NN Switch** is a compact Windows utility that fixes text typed using the wrong
 keyboard layout.
-
-Current version: **v.1.0**
 
 ## No installation. No Yandex. No bundled extras.
 
@@ -26,9 +24,6 @@ button.
 
 ## Key features
 
-- **Autoswitch** — automatically fixes the last word after Space, Enter, or Tab.
-  Detection is intentionally conservative and currently optimized for Russian
-  and English.
 - **Switch selected text** — fixes the currently selected text.
 - **Switch last written word** — fixes the word immediately before the caret.
 - **Switch active text field** — fixes all text in the active field.
@@ -48,11 +43,6 @@ button.
 
 ## Tray menu
 
-### Autoswitch
-
-Enables automatic correction of the last typed word. A bright green check mark
-indicates that it is active.
-
 ### Hotkeys...
 
 Opens the table containing every available action. The first three rows use the
@@ -69,8 +59,8 @@ Empty cells are not registered and do not intercept any input.
 
 ### Switch to...
 
-Selects the target layout used by the three regular switching commands and
-Autoswitch for each possible current layout.
+Selects the target layout used by the three regular switching commands for each
+possible current layout.
 
 ### Exit
 
@@ -102,8 +92,6 @@ imported automatically on first launch.
   administrator. NN Switch must be started with the same privileges to work with
   such a window.
 - Some terminals and editors redefine the standard clipboard shortcuts.
-- Autoswitch prefers leaving an unfamiliar word unchanged over making an
-  uncertain correction.
 
 ## Build
 
@@ -115,13 +103,19 @@ imported automatically on first launch.
 
 The script:
 
-1. Generates the multi-resolution `NN.ico` from `NN.png`.
-2. Runs the test suite.
-3. Publishes a self-contained single-file executable.
-4. Creates a local `NN Switch.lnk` shortcut in the project root.
+1. Runs the fast test suite.
+2. Publishes a self-contained single-file executable using the ready-to-use
+   `NN.ico` stored in the repository.
+3. Creates a local `NN Switch.lnk` shortcut in the project root.
 
 Output:
 
 ```text
 bin\publish\win-x64\NN Switch.exe
+```
+
+Run the slower Windows integration checks locally with:
+
+```powershell
+.\verify.ps1 -SkipShortcut
 ```

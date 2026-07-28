@@ -8,25 +8,11 @@ internal static class NativeMethods
 {
     internal const int WmHotkey = 0x0312;
     internal const int WmInputLanguageChangeRequest = 0x0050;
-    internal const int WhKeyboardLl = 13;
-    internal const int WmKeyDown = 0x0100;
-    internal const int WmSysKeyDown = 0x0104;
-    internal const uint LlkhfInjected = 0x00000010;
 
-    internal const ushort VkBack = 0x08;
-    internal const ushort VkTab = 0x09;
-    internal const ushort VkReturn = 0x0D;
     internal const ushort VkShift = 0x10;
     internal const ushort VkControl = 0x11;
     internal const ushort VkMenu = 0x12;
-    internal const ushort VkCapital = 0x14;
-    internal const ushort VkEscape = 0x1B;
-    internal const ushort VkSpace = 0x20;
     internal const ushort VkLeft = 0x25;
-    internal const ushort VkUp = 0x26;
-    internal const ushort VkRight = 0x27;
-    internal const ushort VkDown = 0x28;
-    internal const ushort VkDelete = 0x2E;
     internal const ushort VkLwin = 0x5B;
     internal const ushort VkRwin = 0x5C;
     internal const ushort VkA = 0x41;
@@ -37,18 +23,6 @@ internal static class NativeMethods
     internal const uint KeyeventfKeyup = 0x0002;
     internal const uint InputKeyboard = 1;
     internal const uint MapvkVkToVsc = 0;
-
-    internal delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
-
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct Kbdllhookstruct
-    {
-        internal uint VkCode;
-        internal uint ScanCode;
-        internal uint Flags;
-        internal uint Time;
-        internal UIntPtr ExtraInfo;
-    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct Input
@@ -63,6 +37,7 @@ internal static class NativeMethods
         [FieldOffset(0)]
         internal Keybdinput Keyboard;
 
+        // INPUT uses the largest union member for its native size, including on x64.
         [FieldOffset(0)]
         internal Mouseinput Mouse;
     }
@@ -104,10 +79,6 @@ internal static class NativeMethods
     internal static extern IntPtr GetForegroundWindow();
 
     [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    internal static extern bool SetForegroundWindow(IntPtr windowHandle);
-
-    [DllImport("user32.dll")]
     internal static extern uint GetWindowThreadProcessId(IntPtr windowHandle, IntPtr processId);
 
     [DllImport("user32.dll")]
@@ -137,39 +108,11 @@ internal static class NativeMethods
         IntPtr wParam,
         IntPtr lParam);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    internal static extern IntPtr SetWindowsHookEx(
-        int hookId,
-        LowLevelKeyboardProc callback,
-        IntPtr moduleHandle,
-        uint threadId);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    internal static extern bool UnhookWindowsHookEx(IntPtr hookHandle);
-
-    [DllImport("user32.dll")]
-    internal static extern IntPtr CallNextHookEx(
-        IntPtr hookHandle,
-        int code,
-        IntPtr wParam,
-        IntPtr lParam);
-
     [DllImport("user32.dll")]
     internal static extern short GetAsyncKeyState(int virtualKey);
 
-    [DllImport("user32.dll")]
-    internal static extern short GetKeyState(int virtualKey);
-
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint inputCount, Input[] inputs, int inputSize);
-
-    [DllImport("user32.dll")]
-    internal static extern uint GetClipboardSequenceNumber();
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    internal static extern bool DestroyIcon(IntPtr iconHandle);
 
     [DllImport("dwmapi.dll")]
     internal static extern int DwmSetWindowAttribute(

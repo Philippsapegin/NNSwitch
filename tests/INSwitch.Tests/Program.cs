@@ -1,5 +1,6 @@
 using System.Text;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using INSwitch.Interop;
 using INSwitch.Models;
 using INSwitch.Services;
@@ -19,6 +20,8 @@ internal static class Program
             var layouts = KeyboardLayoutService.GetInstalled();
             Assert(layouts.Count > 0, "Windows reports at least one installed keyboard layout.");
             TestSettingsDefaults(layouts);
+            TestSettingsCleanup(layouts);
+            TestSettingsPersistence(layouts);
             TestHotkeyFormatting();
             TestRussianEnglishConversion(layouts);
 
@@ -50,7 +53,11 @@ internal static class Program
     private static void TestSettingsDefaults(IReadOnlyList<KeyboardLayoutDescriptor> layouts)
     {
         var settings = new AppSettings();
-        SettingsStore.Normalize(settings, layouts);
+        SettingsNormalizer.Normalize(settings, layouts);
+
+        Assert(
+            settings.SchemaVersion == AppSettings.CurrentSchemaVersion,
+            "Settings use the current schema version.");
 
         foreach (var source in layouts)
         {
@@ -102,6 +109,83 @@ internal static class Program
             "An ordinary letter can be used without a modifier.");
     }
 
+    private static void TestSettingsPersistence(
+        IReadOnlyList<KeyboardLayoutDescriptor> layouts)
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "NN-Switch-tests",
+            Guid.NewGuid().ToString("N"));
+        var currentDirectory = Path.Combine(root, "current");
+        var legacyDirectory = Path.Combine(root, "legacy");
+
+        try
+        {
+            Directory.CreateDirectory(legacyDirectory);
+            File.WriteAllText(
+                Path.Combine(legacyDirectory, "settings.json"),
+                """{"UnknownLegacyProperty":true}""");
+
+            var store = new SettingsStore(
+                currentDirectory,
+                legacyDirectory,
+                _ => { });
+            var migrated = store.Load(layouts);
+            var currentPath = Path.Combine(currentDirectory, "settings.json");
+            var migratedJson = File.ReadAllText(currentPath);
+
+            Assert(
+                migrated.SchemaVersion == AppSettings.CurrentSchemaVersion,
+                "Legacy settings are upgraded to the current schema.");
+            Assert(
+                !migratedJson.Contains("UnknownLegacyProperty", StringComparison.Ordinal),
+                "Obsolete settings data is removed during migration.");
+            Assert(
+                File.Exists(Path.Combine(legacyDirectory, "settings.json")),
+                "Migration keeps the legacy file as a rollback fallback.");
+
+            File.WriteAllText(currentPath, "{broken-json");
+            store.Load(layouts);
+
+            Assert(
+                Directory.GetFiles(currentDirectory, "settings.json.corrupt-*").Length == 1,
+                "Invalid settings are backed up before defaults are written.");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    private static void TestSettingsCleanup(IReadOnlyList<KeyboardLayoutDescriptor> layouts)
+    {
+        const string staleId = "DEADDEAD";
+        var settings = new AppSettings();
+        SettingsNormalizer.Normalize(settings, layouts);
+        settings.SwitchTargets[staleId] = layouts[0].Id;
+        settings.Hotkeys.TargetLayouts[staleId] = new TargetLayoutHotkeys();
+        settings.SwitchTargets[layouts[0].Id] = staleId;
+
+        var changed = SettingsNormalizer.Normalize(settings, layouts);
+
+        Assert(changed, "Normalization reports repaired settings.");
+        Assert(
+            !settings.SwitchTargets.ContainsKey(staleId),
+            "A removed source layout is deleted from switch targets.");
+        Assert(
+            !settings.Hotkeys.TargetLayouts.ContainsKey(staleId),
+            "A removed layout is deleted from direct hotkeys.");
+        Assert(
+            string.IsNullOrEmpty(settings.SwitchTargets[layouts[0].Id]) ||
+            layouts.Any(layout => layout.Id.Equals(
+                settings.SwitchTargets[layouts[0].Id],
+                StringComparison.OrdinalIgnoreCase)),
+            "A missing target layout is replaced with a valid target or no target.");
+    }
+
     private static void TestRussianEnglishConversion(IReadOnlyList<KeyboardLayoutDescriptor> layouts)
     {
         var english = layouts.FirstOrDefault(layout => layout.TwoLetterLanguage == "en");
@@ -118,15 +202,6 @@ internal static class Program
         var englishText = KeyboardLayoutService.ConvertText("руддщ цщкдв", russian, english);
         Assert(englishText == "hello world", "Russian key positions convert to English text.");
 
-        Assert(
-            LanguageHeuristics.ShouldSwitch("ghbdtn", "привет", english, russian),
-            "Autoswitch recognizes a mistyped Russian greeting.");
-        Assert(
-            LanguageHeuristics.ShouldSwitch("руддщ", "hello", russian, english),
-            "Autoswitch recognizes a mistyped English greeting.");
-        Assert(
-            !LanguageHeuristics.ShouldSwitch("hello", "руддщ", english, russian),
-            "Autoswitch keeps a valid English word.");
     }
 
     private static void CaptureUi(
@@ -147,14 +222,13 @@ internal static class Program
         SaveFormImage(hotkeysForm, Path.Combine(outputDirectory, "hotkeys.png"));
 
         var settings = new AppSettings();
-        SettingsStore.Normalize(settings, layouts);
+        SettingsNormalizer.Normalize(settings, layouts);
         using var targetsForm = new SwitchTargetsForm(layouts, settings.SwitchTargets);
         SaveFormImage(targetsForm, Path.Combine(outputDirectory, "switch-targets.png"));
 
-        using var trayMenu = new ContextMenuStrip { ShowCheckMargin = true };
+        using var trayMenu = new ContextMenuStrip { ShowCheckMargin = false };
         trayMenu.Items.AddRange(new ToolStripItem[]
         {
-            new ToolStripMenuItem("Autoswitch") { Checked = true },
             new ToolStripMenuItem("Hotkeys..."),
             new ToolStripMenuItem("Switch to..."),
             new ToolStripSeparator(),
@@ -189,10 +263,9 @@ internal static class Program
         var originalSettings = settingsExisted ? File.ReadAllBytes(settingsPath) : null;
         var testSettings = new AppSettings
         {
-            AutoSwitch = true,
             Hotkeys = HotkeySettings.Defaults
         };
-        SettingsStore.Normalize(testSettings, layouts);
+        SettingsNormalizer.Normalize(testSettings, layouts);
         var russianTarget = layouts.FirstOrDefault(layout => layout.TwoLetterLanguage == "ru");
         if (russianTarget is not null)
         {
@@ -216,8 +289,6 @@ internal static class Program
             appProcess.Refresh();
             Assert(!appProcess.HasExited, "The tray process remains running after startup.");
             Assert(appProcess.MainWindowHandle == IntPtr.Zero, "The tray process has no main window.");
-            TestScreenshotShortcutPassThrough();
-
             var englishInputLanguage = InputLanguage.InstalledInputLanguages
                 .Cast<InputLanguage>()
                 .First(language =>
@@ -245,7 +316,7 @@ internal static class Program
             form.Activate();
             textBox.Focus();
             textBox.SelectAll();
-            NativeMethods.SetForegroundWindow(form.Handle);
+            SetForegroundWindow(form.Handle);
             InputLanguage.CurrentInputLanguage = englishInputLanguage;
             NativeMethods.PostMessage(
                 form.Handle,
@@ -280,7 +351,7 @@ internal static class Program
                 IntPtr.Zero,
                 english.Handle);
             textBox.Focus();
-            NativeMethods.SetForegroundWindow(form.Handle);
+            SetForegroundWindow(form.Handle);
             PumpMessages(100);
             NativeMethods.SendChord(
                 NativeMethods.VkControl,
@@ -300,7 +371,7 @@ internal static class Program
                 IntPtr.Zero,
                 english.Handle);
             textBox.Focus();
-            NativeMethods.SetForegroundWindow(form.Handle);
+            SetForegroundWindow(form.Handle);
             PumpMessages(100);
             NativeMethods.SendChord(
                 NativeMethods.VkControl,
@@ -309,7 +380,7 @@ internal static class Program
             PumpMessages(1600);
             Assert(
                 textBox.Text == "Ghbdtn? мир! ",
-                "Last-word switching preserves a trailing word separator used by Autoswitch.");
+                "Last-word switching preserves a trailing word separator.");
 
             textBox.Text = "Ghbdtn? vbh!";
             textBox.SelectionStart = 3;
@@ -320,7 +391,7 @@ internal static class Program
                 IntPtr.Zero,
                 english.Handle);
             textBox.Focus();
-            NativeMethods.SetForegroundWindow(form.Handle);
+            SetForegroundWindow(form.Handle);
             PumpMessages(100);
             NativeMethods.SendChord(
                 NativeMethods.VkControl,
@@ -342,7 +413,7 @@ internal static class Program
                     IntPtr.Zero,
                     english.Handle);
                 textBox.Focus();
-                NativeMethods.SetForegroundWindow(form.Handle);
+                SetForegroundWindow(form.Handle);
                 PumpMessages(100);
                 NativeMethods.SendChord((ushort)Keys.F8);
                 PumpMessages(1600);
@@ -429,34 +500,6 @@ internal static class Program
         }
     }
 
-    private static void TestScreenshotShortcutPassThrough()
-    {
-        NativeMethods.SendChord(
-            NativeMethods.VkLwin,
-            NativeMethods.VkShift,
-            (ushort)Keys.S);
-        PumpMessages(1200);
-
-        var captureHosts = Process.GetProcessesByName("ScreenClippingHost")
-            .Concat(Process.GetProcessesByName("SnippingTool"))
-            .ToList();
-        try
-        {
-            Assert(
-                captureHosts.Count > 0,
-                "Win+Shift+S reaches the Windows screen capture host while Autoswitch is active.");
-        }
-        finally
-        {
-            NativeMethods.SendChord(NativeMethods.VkEscape);
-            PumpMessages(200);
-            foreach (var process in captureHosts)
-            {
-                process.Dispose();
-            }
-        }
-    }
-
     private static void PumpMessages(int milliseconds)
     {
         var stopwatch = Stopwatch.StartNew();
@@ -500,4 +543,8 @@ internal static class Program
 
         Console.WriteLine($"PASS: {message}");
     }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr windowHandle);
 }

@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using INSwitch.Models;
 using INSwitch.Services;
 using INSwitch.UI;
@@ -9,11 +8,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
 {
     private readonly SettingsStore _settingsStore = new();
     private readonly ContextMenuStrip _trayMenu;
-    private readonly ToolStripMenuItem _autoswitchItem;
     private readonly NotifyIcon _notifyIcon;
     private readonly Icon _appIcon;
     private readonly HotkeyManager _hotkeyManager;
-    private readonly AutoSwitchMonitor _autoSwitchMonitor;
     private readonly TextSwitchService _textSwitchService;
     private IReadOnlyList<KeyboardLayoutDescriptor> _layouts;
     private readonly AppSettings _settings;
@@ -23,14 +20,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         _layouts = KeyboardLayoutService.GetInstalled();
         _settings = _settingsStore.Load(_layouts);
-        _settingsStore.Save(_settings);
         _appIcon = TrayIconFactory.Create();
-
-        _autoswitchItem = new ToolStripMenuItem("Autoswitch")
-        {
-            CheckOnClick = false
-        };
-        _autoswitchItem.Click += (_, _) => ToggleAutoswitch();
 
         var hotkeysItem = new ToolStripMenuItem("Hotkeys...");
         hotkeysItem.Click += (_, _) => ShowHotkeysForm();
@@ -43,17 +33,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _trayMenu = new ContextMenuStrip
         {
-            ShowCheckMargin = true
+            ShowCheckMargin = false
         };
         _trayMenu.Items.AddRange(new ToolStripItem[]
         {
-            _autoswitchItem,
             hotkeysItem,
             switchTargetsItem,
             new ToolStripSeparator(),
             exitItem
         });
-        _trayMenu.Opening += TrayMenuOnOpening;
         DarkTheme.Apply(_trayMenu);
 
         _notifyIcon = new NotifyIcon
@@ -71,20 +59,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ShowNotification);
 
         _hotkeyManager = new HotkeyManager(HandleHotkey);
-        _autoSwitchMonitor = new AutoSwitchMonitor(
-            () => _settings,
-            () => _layouts,
-            () => _textSwitchService.SwitchAsync(TextSwitchMode.LastWord, showFailure: false));
 
-        UpdateMenuState();
-        ApplyFunctionalState();
-    }
-
-    private void ToggleAutoswitch()
-    {
-        _settings.AutoSwitch = !_settings.AutoSwitch;
-        _settingsStore.Save(_settings);
-        UpdateMenuState();
         ApplyFunctionalState();
     }
 
@@ -92,7 +67,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         RefreshLayouts();
         _hotkeyManager.UnregisterAll();
-        _autoSwitchMonitor.Stop();
 
         try
         {
@@ -106,7 +80,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
 
             _settings.Hotkeys = form.Result;
-            _settingsStore.Save(_settings);
+            SaveSettings();
         }
         finally
         {
@@ -127,34 +101,26 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         _settings.SwitchTargets = form.Result;
-        _settingsStore.Save(_settings);
+        SaveSettings();
     }
 
     private void RefreshLayouts()
     {
         _layouts = KeyboardLayoutService.GetInstalled();
-        SettingsStore.Normalize(_settings, _layouts);
-        _settingsStore.Save(_settings);
+        if (SettingsNormalizer.Normalize(_settings, _layouts))
+        {
+            SaveSettings();
+        }
     }
 
     private void ApplyFunctionalState()
     {
-        _hotkeyManager.UnregisterAll();
-        _autoSwitchMonitor.Stop();
-
         var registrationErrors = _hotkeyManager.RegisterAll(_settings.Hotkeys, _layouts);
         if (registrationErrors.Count > 0)
         {
             ShowNotification(
                 "Some hotkeys are unavailable",
                 string.Join(Environment.NewLine, registrationErrors));
-        }
-
-        if (_settings.AutoSwitch && !_autoSwitchMonitor.Start())
-        {
-            ShowNotification(
-                "Autoswitch could not start",
-                new Win32Exception().Message);
         }
     }
 
@@ -165,23 +131,22 @@ internal sealed class TrayApplicationContext : ApplicationContext
             targetLayoutId: command.TargetLayoutId);
     }
 
-    private void TrayMenuOnOpening(object? sender, CancelEventArgs eventArgs)
-    {
-        UpdateMenuState();
-    }
-
     private void NotifyIconOnMouseClick(object? sender, MouseEventArgs eventArgs)
     {
         if (eventArgs.Button == MouseButtons.Left)
         {
-            UpdateMenuState();
             _trayMenu.Show(Cursor.Position);
         }
     }
 
-    private void UpdateMenuState()
+    private void SaveSettings()
     {
-        _autoswitchItem.Checked = _settings.AutoSwitch;
+        if (!_settingsStore.Save(_settings))
+        {
+            ShowNotification(
+                "Settings were not saved",
+                "NN Switch could not write settings.json. See error.log for details.");
+        }
     }
 
     private void ShowNotification(string title, string message)
@@ -202,7 +167,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         _exiting = true;
-        _autoSwitchMonitor.Dispose();
         _hotkeyManager.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
