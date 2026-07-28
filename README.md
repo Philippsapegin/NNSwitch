@@ -4,74 +4,77 @@
   <img src="NN.png" width="160" alt="NN Switch logo">
 </p>
 
-**NN Switch** — компактная Windows-утилита для исправления текста, набранного
-в неверной раскладке.
+**NN Switch** is a compact Windows utility that fixes text typed using the wrong
+keyboard layout.
 
-Версия: **v.1.0**
+Current version: **v.1.0**
 
-## Без установки. Без Яндекса. Без лишнего
+## No installation. No Yandex. No bundled extras.
 
-Скачайте один файл `NN Switch.exe` со страницы
-[Releases](https://github.com/Philippsapegin/NNSwitch/releases/latest) и запустите его.
+Download the single `NN Switch.exe` file from the
+[Releases](https://github.com/Philippsapegin/NNSwitch/releases/latest) page and
+run it.
 
-- установщик не нужен;
-- .NET устанавливать не нужно;
-- никаких предложений установить Яндекс, браузер, тулбары или другое ПО;
-- нет рекламы, телеметрии и сетевых запросов;
-- программа не записывает введённый текст в файлы.
+- No installer.
+- No separate .NET runtime is required.
+- No offers to install Yandex, browsers, toolbars, or any other software.
+- No advertising, telemetry, or network requests.
+- Typed text is never written to files.
 
-После запуска NN Switch работает только в системном трее: без главного окна и
-кнопки на панели задач.
+NN Switch runs entirely from the system tray, with no main window and no taskbar
+button.
 
 ## Key features
 
-- **Autoswitch** — автоматически исправляет последнее слово после Space, Enter
-  или Tab. Распознавание сделано консервативно для русского и английского.
-- **Switch selected text** — исправляет выделенный фрагмент.
-- **Switch last written word** — исправляет слово перед курсором.
-- **Switch active text field** — исправляет всё активное текстовое поле.
-- **Switch to** — отдельное направление преобразования для каждой установленной
-  в Windows раскладки.
-- **Direct language hotkeys** — для каждой установленной раскладки появляются
-  три дополнительных действия: выделенный текст, последнее слово и всё поле
-  можно отправить прямо в выбранный язык, минуя обычную таблицу направлений.
-- **Any hotkey** — можно назначить сочетание с модификаторами или одну обычную
-  клавишу, например `Pause`, `F8` или даже букву.
-- **Clipboard restore** — после замены текста прежнее содержимое буфера обмена
-  восстанавливается.
-- **Native Windows layout conversion** — поддерживаются регистр, пунктуация,
-  US/UK и другие установленные раскладки.
-- **Dark tray UI** — компактное меню и таблицы в едином тёмном стиле.
+- **Autoswitch** — automatically fixes the last word after Space, Enter, or Tab.
+  Detection is intentionally conservative and currently optimized for Russian
+  and English.
+- **Switch selected text** — fixes the currently selected text.
+- **Switch last written word** — fixes the word immediately before the caret.
+- **Switch active text field** — fixes all text in the active field.
+- **Switch to** — configures an independent target for every keyboard layout
+  installed in Windows.
+- **Direct language hotkeys** — every installed layout gets three additional
+  actions. Selected text, the last word, or the entire field can be sent directly
+  to that layout without using the regular target mapping.
+- **Any hotkey** — assign a key combination or a single key such as `Pause`, `F8`,
+  or even a letter.
+- **Clipboard restoration** — the previous clipboard contents are restored after
+  replacing text.
+- **Native Windows layout conversion** — preserves capitalization and punctuation
+  and supports US, UK, and other installed layouts.
+- **Dark tray UI** — compact menus and settings tables with a consistent dark
+  appearance.
 
 ## Tray menu
 
 ### Autoswitch
 
-Включает автоматическое исправление последнего напечатанного слова. Активное
-состояние отмечается зелёной галочкой.
+Enables automatic correction of the last typed word. A bright green check mark
+indicates that it is active.
 
 ### Hotkeys...
 
-Открывает таблицу всех действий. Первые три строки используют направление из
-`Switch to...`. Затем для каждой установленной раскладки динамически добавляются
-ещё три пустых хоткея с явным целевым языком.
+Opens the table containing every available action. The first three rows use the
+mapping configured under `Switch to...`. Three empty direct-target hotkeys are
+then added dynamically for every installed keyboard layout.
 
-Чтобы изменить хоткей:
+To change a hotkey:
 
-1. Нажмите на его ячейку — старое значение сразу исчезнет.
-2. Нажмите новую клавишу или сочетание.
-3. Нажмите **Save**.
+1. Click its cell. The previous value disappears immediately.
+2. Press a new key or key combination.
+3. Click **Save**.
 
-Пустые ячейки не регистрируются и ничего не перехватывают.
+Empty cells are not registered and do not intercept any input.
 
 ### Switch to...
 
-Для каждой текущей раскладки выбирает раскладку, в которую будет преобразован
-текст обычными тремя командами и Autoswitch.
+Selects the target layout used by the three regular switching commands and
+Autoswitch for each possible current layout.
 
 ### Exit
 
-Освобождает глобальные хоткеи и завершает процесс.
+Releases all global hotkeys and exits the process.
 
 ## Default hotkeys
 
@@ -81,43 +84,43 @@
 | Switch last written word | `Ctrl+Alt+W` |
 | Switch active text field | `Ctrl+Alt+A` |
 
-Языковые хоткеи по умолчанию пустые.
+Direct language hotkeys are empty by default.
 
 ## Settings
 
 - `%APPDATA%\NN Switch\settings.json`
 - `%LOCALAPPDATA%\NN Switch\error.log`
 
-Настройки прежней версии из `%APPDATA%\ИN Switch\settings.json` автоматически
-подхватываются при первом запуске.
+Settings from earlier builds stored in `%APPDATA%\ИN Switch\settings.json` are
+imported automatically on first launch.
 
 ## Known limitations
 
-- Защищённые поля и контролы, блокирующие Ctrl+A / Ctrl+C / Ctrl+X / Ctrl+V,
-  нельзя исправить этим способом.
-- Обычный процесс Windows не может отправлять клавиши в приложение, запущенное
-  от администратора. Для такого окна NN Switch тоже нужно запустить с теми же
-  правами.
-- Некоторые терминалы и редакторы переопределяют стандартные clipboard-команды.
-- Автоматическое определение лучше оставит незнакомое слово без изменения, чем
-  выполнит сомнительное исправление.
+- Password fields and controls that block Ctrl+A, Ctrl+C, Ctrl+X, or Ctrl+V cannot
+  be corrected this way.
+- A regular Windows process cannot send input to an application running as
+  administrator. NN Switch must be started with the same privileges to work with
+  such a window.
+- Some terminals and editors redefine the standard clipboard shortcuts.
+- Autoswitch prefers leaving an unfamiliar word unchanged over making an
+  uncertain correction.
 
 ## Build
 
-Требуется .NET 10 SDK x64.
+.NET 10 SDK x64 is required.
 
 ```powershell
 .\build.ps1
 ```
 
-Скрипт:
+The script:
 
-1. создаёт многослойный `NN.ico` из `NN.png`;
-2. запускает тесты;
-3. публикует автономный single-file EXE;
-4. создаёт в корне локальный ярлык `NN Switch.lnk`.
+1. Generates the multi-resolution `NN.ico` from `NN.png`.
+2. Runs the test suite.
+3. Publishes a self-contained single-file executable.
+4. Creates a local `NN Switch.lnk` shortcut in the project root.
 
-Результат:
+Output:
 
 ```text
 bin\publish\win-x64\NN Switch.exe
