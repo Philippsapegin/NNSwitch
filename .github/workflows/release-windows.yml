@@ -1,0 +1,54 @@
+name: Release Windows
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Build and test
+        shell: pwsh
+        run: .\build.ps1
+
+      - name: Create checksum
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path '.\bin\publish\win-x64\NN Switch.exe'
+          $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+          "$hash  NN Switch.exe" | Set-Content -LiteralPath '.\SHA256SUMS.txt' -Encoding ascii
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $exe = Resolve-Path '.\bin\publish\win-x64\NN Switch.exe'
+          gh release create "$env:GITHUB_REF_NAME" `
+            $exe `
+            '.\SHA256SUMS.txt' `
+            --title "NN Switch $env:GITHUB_REF_NAME" `
+            --notes-file '.\RELEASE_NOTES.md'
+
+      - name: Upload workflow artifact
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: NN-Switch-Windows-x64
+          path: bin/publish/win-x64/NN Switch.exe
