@@ -4,50 +4,62 @@
   <img src="NN.ico" width="160" alt="NN Switch logo">
 </p>
 
-**NN Switch** is a compact Windows utility that fixes text typed using the wrong
-keyboard layout.
+**NN Switch** is a small Windows utility for correcting text typed with the
+wrong keyboard layout. It works on demand: choose an action, assign a hotkey,
+and press it when text needs to be fixed.
+
+NN Switch does not continuously analyze what you type and does not install a
+global keyboard hook. It only acts when one of its configured hotkeys is
+pressed.
 
 ## No installation. No Yandex. No bundled extras.
 
-Download the single `NN Switch.exe` file from the
-[Releases](https://github.com/Philippsapegin/NNSwitch/releases/latest) page and
+Download `NN Switch.exe` from the
+[latest release](https://github.com/Philippsapegin/NNSwitch/releases/latest) and
 run it.
 
-- No installer.
-- No separate .NET runtime is required.
+- One portable, self-contained x64 executable.
+- No installer and no separate .NET runtime.
 - No offers to install Yandex, browsers, toolbars, or any other software.
 - No advertising, telemetry, or network requests.
-- Typed text is never written to files.
+- Typed text is never logged or written to files.
 
-NN Switch runs entirely from the system tray, with no main window and no taskbar
-button.
+The application runs entirely from the system tray, with no main window and no
+taskbar button.
 
 ## Key features
 
-- **Switch selected text** — fixes the currently selected text.
-- **Switch last written word** — fixes the word immediately before the caret.
-- **Switch active text field** — fixes all text in the active field.
-- **Switch to** — configures an independent target for every keyboard layout
-  installed in Windows.
-- **Direct language hotkeys** — every installed layout gets three additional
-  actions. Selected text, the last word, or the entire field can be sent directly
-  to that layout without using the regular target mapping.
-- **Any hotkey** — assign a key combination or a single key such as `Pause`, `F8`,
-  or even a letter.
-- **Clipboard restoration** — the previous clipboard contents are restored after
+- **Switch selected text** — corrects the currently selected text.
+- **Switch last written word** — corrects the word immediately before the caret.
+- **Switch active text field** — corrects all text in the active field.
+- **Per-layout targets** — selects a separate destination layout for every
+  layout installed in Windows.
+- **Direct language hotkeys** — sends selected text, the last word, or the
+  active field directly to a specific installed layout.
+- **Any hotkey** — accepts a key combination or a single key such as `Pause`,
+  `F8`, or even a letter.
+- **Clipboard restoration** — restores the previous clipboard contents after
   replacing text.
-- **Native Windows layout conversion** — preserves capitalization and punctuation
-  and supports US, UK, and other installed layouts.
-- **Dark tray UI** — compact menus and settings tables with a consistent dark
-  appearance.
+- **Native Windows conversion** — preserves capitalization and punctuation and
+  supports US, UK, Russian, and other installed layouts.
+- **Compact dark UI** — provides a tray menu and dense settings tables without
+  a permanent application window.
+
+## Getting started
+
+1. Open **Switch to...** and select a target for each source layout.
+2. Open **Hotkeys...** and assign the shortcuts you want to use.
+3. Focus any editable text field and press a configured hotkey.
+
+The three default actions use the mapping from **Switch to...**. For less common
+workflows, the Hotkeys table also provides three empty direct-target actions for
+every installed layout.
 
 ## Tray menu
 
 ### Hotkeys...
 
-Opens the table containing every available action. The first three rows use the
-mapping configured under `Switch to...`. Three empty direct-target hotkeys are
-then added dynamically for every installed keyboard layout.
+Opens the table containing every available action.
 
 To change a hotkey:
 
@@ -55,11 +67,13 @@ To change a hotkey:
 2. Press a new key or key combination.
 3. Click **Save**.
 
-Empty cells are not registered and do not intercept any input.
+Empty cells are not registered and do not intercept any input. NN Switch rejects
+duplicate shortcuts inside its own configuration; Windows may also reject a
+shortcut already reserved by another application.
 
 ### Switch to...
 
-Selects the target layout used by the three regular switching commands for each
+Selects the target layout used by the three default switching actions for each
 possible current layout.
 
 ### Exit
@@ -76,22 +90,39 @@ Releases all global hotkeys and exits the process.
 
 Direct language hotkeys are empty by default.
 
-## Settings
+## Upgrading from v1.0
 
-- `%APPDATA%\NN Switch\settings.json`
-- `%LOCALAPPDATA%\NN Switch\error.log`
+Automatic switching has been removed. NN Switch is now exclusively
+hotkey-driven, which eliminates continuous keyboard monitoring and the language
+detection heuristics it required.
 
-Settings from earlier builds stored in `%APPDATA%\ИN Switch\settings.json` are
-imported automatically on first launch.
+Existing hotkeys and target mappings are preserved. Obsolete settings are
+discarded automatically when the configuration is upgraded.
 
-## Known limitations
+## Settings and diagnostics
 
-- Password fields and controls that block Ctrl+A, Ctrl+C, Ctrl+X, or Ctrl+V cannot
-  be corrected this way.
+- Settings: `%APPDATA%\NN Switch\settings.json`
+- Error log: `%LOCALAPPDATA%\NN Switch\error.log`
+- Previous rotated log: `%LOCALAPPDATA%\NN Switch\error.previous.log`
+
+Settings from early builds stored in `%APPDATA%\ИN Switch\settings.json` are
+imported automatically. If the current settings file contains invalid JSON,
+NN Switch preserves it as `settings.json.corrupt-<timestamp>` before creating
+clean defaults.
+
+## Requirements and limitations
+
+- Windows 10 or newer.
+- x64 processor.
+- Password fields and controls that block Ctrl+A, Ctrl+C, Ctrl+X, or Ctrl+V
+  cannot be corrected this way.
 - A regular Windows process cannot send input to an application running as
-  administrator. NN Switch must be started with the same privileges to work with
-  such a window.
+  administrator. Start NN Switch with the same privileges to work with such a
+  window.
 - Some terminals and editors redefine the standard clipboard shortcuts.
+
+The executable is currently unsigned, so Windows SmartScreen may display a
+warning on first launch.
 
 ## Build
 
@@ -101,12 +132,9 @@ imported automatically on first launch.
 .\build.ps1
 ```
 
-The script:
-
-1. Runs the fast test suite.
-2. Publishes a self-contained single-file executable using the ready-to-use
-   `NN.ico` stored in the repository.
-3. Creates a local `NN Switch.lnk` shortcut in the project root.
+The script runs the fast test suite, publishes a self-contained single-file
+executable using the ready-to-use `NN.ico`, and creates a local
+`NN Switch.lnk` shortcut in the project root.
 
 Output:
 
