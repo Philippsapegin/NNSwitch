@@ -13,6 +13,7 @@ internal static class NativeMethods
     internal const ushort VkControl = 0x11;
     internal const ushort VkMenu = 0x12;
     internal const ushort VkLeft = 0x25;
+    internal const ushort VkRight = 0x27;
     internal const ushort VkLwin = 0x5B;
     internal const ushort VkRwin = 0x5C;
     internal const ushort VkA = 0x41;
@@ -143,6 +144,30 @@ internal static class NativeMethods
             inputs.Add(CreateKeyboardInput(virtualKeys[index], keyUp: true));
         }
 
+        return SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf<Input>()) == inputs.Count;
+    }
+
+    internal static bool SendModifiedKeyRepeated(
+        ushort modifier,
+        ushort virtualKey,
+        int repeatCount)
+    {
+        if (repeatCount <= 0)
+        {
+            return true;
+        }
+
+        var inputs = new List<Input>((repeatCount * 2) + 2)
+        {
+            CreateKeyboardInput(modifier, keyUp: false)
+        };
+        for (var index = 0; index < repeatCount; index++)
+        {
+            inputs.Add(CreateKeyboardInput(virtualKey, keyUp: false));
+            inputs.Add(CreateKeyboardInput(virtualKey, keyUp: true));
+        }
+
+        inputs.Add(CreateKeyboardInput(modifier, keyUp: true));
         return SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf<Input>()) == inputs.Count;
     }
 

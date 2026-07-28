@@ -22,6 +22,7 @@ internal static class Program
             TestSettingsDefaults(layouts);
             TestSettingsCleanup(layouts);
             TestSettingsPersistence(layouts);
+            TestLastTokenSelection();
             TestHotkeyFormatting();
             TestRussianEnglishConversion(layouts);
 
@@ -29,8 +30,8 @@ internal static class Program
             {
                 var executablePath = GetOptionValue(args, "--integration") ??
                     throw new InvalidOperationException("--integration requires the app executable path.");
-                TestHotkeyDelivery(layouts);
                 TestSelectedTextIntegration(layouts, executablePath);
+                TestHotkeyDelivery(layouts);
             }
 
             if (args.Contains("--screenshots", StringComparer.OrdinalIgnoreCase))
@@ -107,6 +108,26 @@ internal static class Program
             unmodifiedLetter.IsConfigured &&
             HotkeyFormatter.Format(unmodifiedLetter) == "S",
             "An ordinary letter can be used without a modifier.");
+    }
+
+    private static void TestLastTokenSelection()
+    {
+        AssertLastToken("prefix ghbdtn:", "ghbdtn:");
+        AssertLastToken("prefix (ghbdtn:'n)", "(ghbdtn:'n)");
+        AssertLastToken("prefix ltkf'n", "ltkf'n");
+        AssertLastToken("prefix ghbdtn:  ", "ghbdtn:  ");
+        AssertLastToken("first line\r\nsecond", "second");
+        Assert(
+            LastTokenSelection.FromTextBeforeCaret(" \t\r\n") is null,
+            "A whitespace-only prefix has no last token.");
+    }
+
+    private static void AssertLastToken(string textBeforeCaret, string expected)
+    {
+        var selection = LastTokenSelection.FromTextBeforeCaret(textBeforeCaret);
+        Assert(
+            selection?.Text == expected,
+            $"Last-token selection keeps punctuation until whitespace: {expected}");
     }
 
     private static void TestSettingsPersistence(
@@ -266,6 +287,12 @@ internal static class Program
             Hotkeys = HotkeySettings.Defaults
         };
         SettingsNormalizer.Normalize(testSettings, layouts);
+        testSettings.Hotkeys.SelectedText =
+            HotkeyBinding.Create(HotkeyModifiers.None, Keys.F6);
+        testSettings.Hotkeys.LastWord =
+            HotkeyBinding.Create(HotkeyModifiers.None, Keys.F7);
+        testSettings.Hotkeys.ActiveField =
+            HotkeyBinding.Create(HotkeyModifiers.None, Keys.F9);
         var russianTarget = layouts.FirstOrDefault(layout => layout.TwoLetterLanguage == "ru");
         if (russianTarget is not null)
         {
@@ -330,10 +357,7 @@ internal static class Program
 
             const string clipboardSentinel = "INSwitch integration clipboard";
             Clipboard.SetText(clipboardSentinel);
-            NativeMethods.SendChord(
-                NativeMethods.VkControl,
-                NativeMethods.VkMenu,
-                (ushort)Keys.S);
+            NativeMethods.SendChord((ushort)Keys.F6);
             PumpMessages(1600);
 
             Console.WriteLine($"Integration text after hotkey: [{textBox.Text}]");
@@ -353,10 +377,7 @@ internal static class Program
             textBox.Focus();
             SetForegroundWindow(form.Handle);
             PumpMessages(100);
-            NativeMethods.SendChord(
-                NativeMethods.VkControl,
-                NativeMethods.VkMenu,
-                (ushort)Keys.W);
+            NativeMethods.SendChord((ushort)Keys.F7);
             PumpMessages(1600);
             Assert(
                 textBox.Text == "Ghbdtn? мир!",
@@ -373,14 +394,51 @@ internal static class Program
             textBox.Focus();
             SetForegroundWindow(form.Handle);
             PumpMessages(100);
-            NativeMethods.SendChord(
-                NativeMethods.VkControl,
-                NativeMethods.VkMenu,
-                (ushort)Keys.W);
+            NativeMethods.SendChord((ushort)Keys.F7);
             PumpMessages(1600);
             Assert(
                 textBox.Text == "Ghbdtn? мир! ",
                 "Last-word switching preserves a trailing word separator.");
+
+            const string punctuatedToken = "(ghbdtn:'n)";
+            textBox.Text = $"Prefix {punctuatedToken}";
+            textBox.SelectionStart = textBox.TextLength;
+            InputLanguage.CurrentInputLanguage = englishInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                english.Handle);
+            textBox.Focus();
+            SetForegroundWindow(form.Handle);
+            PumpMessages(100);
+            NativeMethods.SendChord((ushort)Keys.F7);
+            PumpMessages(1600);
+            var convertedPunctuatedToken =
+                KeyboardLayoutService.ConvertText(punctuatedToken, english, russian);
+            Assert(
+                textBox.Text == $"Prefix {convertedPunctuatedToken}",
+                "Last-word switching treats apostrophes, colons, and brackets as part of the token.");
+
+            var longToken = $"({new string('g', 70)}:'n)";
+            textBox.Text = $"Prefix {longToken}";
+            textBox.SelectionStart = textBox.TextLength;
+            InputLanguage.CurrentInputLanguage = englishInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                english.Handle);
+            textBox.Focus();
+            SetForegroundWindow(form.Handle);
+            PumpMessages(100);
+            NativeMethods.SendChord((ushort)Keys.F7);
+            PumpMessages(1600);
+            var convertedLongToken =
+                KeyboardLayoutService.ConvertText(longToken, english, russian);
+            Assert(
+                textBox.Text == $"Prefix {convertedLongToken}",
+                "Last-word switching expands its selection beyond the initial probe.");
 
             textBox.Text = "Ghbdtn? vbh!";
             textBox.SelectionStart = 3;
@@ -393,10 +451,7 @@ internal static class Program
             textBox.Focus();
             SetForegroundWindow(form.Handle);
             PumpMessages(100);
-            NativeMethods.SendChord(
-                NativeMethods.VkControl,
-                NativeMethods.VkMenu,
-                (ushort)Keys.A);
+            NativeMethods.SendChord((ushort)Keys.F9);
             PumpMessages(1600);
             Assert(
                 textBox.Text == "Привет, мир!",
