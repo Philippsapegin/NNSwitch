@@ -13,7 +13,6 @@ internal static class NativeMethods
     internal const ushort VkControl = 0x11;
     internal const ushort VkMenu = 0x12;
     internal const ushort VkLeft = 0x25;
-    internal const ushort VkRight = 0x27;
     internal const ushort VkLwin = 0x5B;
     internal const ushort VkRwin = 0x5C;
     internal const ushort VkA = 0x41;
@@ -64,6 +63,29 @@ internal static class NativeMethods
         internal IntPtr ExtraInfo;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GuiThreadInfo
+    {
+        internal uint Size;
+        internal uint Flags;
+        internal IntPtr ActiveWindow;
+        internal IntPtr FocusedWindow;
+        internal IntPtr CaptureWindow;
+        internal IntPtr MenuOwnerWindow;
+        internal IntPtr MoveSizeWindow;
+        internal IntPtr CaretWindow;
+        internal Rect CaretRectangle;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Rect
+    {
+        internal int Left;
+        internal int Top;
+        internal int Right;
+        internal int Bottom;
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool RegisterHotKey(
@@ -81,6 +103,10 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern uint GetWindowThreadProcessId(IntPtr windowHandle, IntPtr processId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetGUIThreadInfo(uint threadId, ref GuiThreadInfo info);
 
     [DllImport("user32.dll")]
     internal static extern IntPtr GetKeyboardLayout(uint threadId);
@@ -129,6 +155,18 @@ internal static class NativeMethods
         string? subIdList);
 
     internal static bool IsKeyDown(int virtualKey) => (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+
+    internal static IntPtr GetFocusedControl(IntPtr foregroundWindow)
+    {
+        var threadId = GetWindowThreadProcessId(foregroundWindow, IntPtr.Zero);
+        var info = new GuiThreadInfo
+        {
+            Size = (uint)Marshal.SizeOf<GuiThreadInfo>()
+        };
+        return threadId != 0 && GetGUIThreadInfo(threadId, ref info)
+            ? info.FocusedWindow
+            : IntPtr.Zero;
+    }
 
     internal static bool SendChord(params ushort[] virtualKeys)
     {

@@ -10,8 +10,6 @@ internal sealed class TextSwitchService
     private const int SelectionDelayMs = 25;
     private const int LayoutActivationDelayMs = 35;
     private const int PasteCompletionDelayMs = 100;
-    private const int InitialLastTokenProbeSize = 64;
-    private const int MaximumLastTokenProbeSize = 4096;
 
     private readonly Func<AppSettings> _getSettings;
     private readonly Func<IReadOnlyList<KeyboardLayoutDescriptor>> _getLayouts;
@@ -92,8 +90,23 @@ internal sealed class TextSwitchService
                     break;
 
                 case TextSwitchMode.LastWord:
-                    var lastToken = await SelectLastTokenAsync(marker, foregroundWindow);
-                    if (lastToken is null)
+                    var lastToken = CaretTextReader.TryGetLastTokenBeforeCaret(foregroundWindow);
+                    if (NativeMethods.GetForegroundWindow() != foregroundWindow)
+                    {
+                        NotifyFailure(showFailure, "The active window changed. Try the command again.");
+                        return false;
+                    }
+
+                    var selected = lastToken is not null
+                        ? NativeMethods.SendModifiedKeyRepeated(
+                            NativeMethods.VkShift,
+                            NativeMethods.VkLeft,
+                            lastToken.CaretMoveCount)
+                        : NativeMethods.SendChord(
+                            NativeMethods.VkControl,
+                            NativeMethods.VkShift,
+                            NativeMethods.VkLeft);
+                    if (!selected)
                     {
                         NotifyFailure(showFailure, "No text was available at the caret.");
                         return false;
@@ -102,12 +115,6 @@ internal sealed class TextSwitchService
                     if (NativeMethods.GetForegroundWindow() != foregroundWindow)
                     {
                         NotifyFailure(showFailure, "The active window changed. Try the command again.");
-                        return false;
-                    }
-
-                    if (!await ClipboardService.TrySetTextAsync(marker))
-                    {
-                        NotifyFailure(showFailure, "The clipboard is currently busy.");
                         return false;
                     }
 
@@ -179,78 +186,6 @@ internal sealed class TextSwitchService
 
             _busy = false;
         }
-    }
-
-    private static async Task<LastTokenSelection?> SelectLastTokenAsync(
-        string marker,
-        IntPtr foregroundWindow)
-    {
-        var requestedMoves = 0;
-        var probeSize = InitialLastTokenProbeSize;
-
-        while (NativeMethods.GetForegroundWindow() == foregroundWindow)
-        {
-            if (!await ClipboardService.TrySetTextAsync(marker))
-            {
-                return null;
-            }
-
-            if (NativeMethods.GetForegroundWindow() != foregroundWindow ||
-                !NativeMethods.SendModifiedKeyRepeated(
-                    NativeMethods.VkShift,
-                    NativeMethods.VkLeft,
-                    probeSize))
-            {
-                return null;
-            }
-
-            requestedMoves += probeSize;
-            await Task.Delay(SelectionDelayMs);
-            if (NativeMethods.GetForegroundWindow() != foregroundWindow)
-            {
-                return null;
-            }
-
-            NativeMethods.SendChord(NativeMethods.VkControl, NativeMethods.VkC);
-            var selectedText = await ClipboardService.WaitForChangedTextAsync(marker);
-            if (string.IsNullOrEmpty(selectedText))
-            {
-                return null;
-            }
-
-            var selectedMoves = LastTokenSelection.CountCaretMoves(selectedText);
-            var lastToken = LastTokenSelection.FromTextBeforeCaret(selectedText);
-            var reachedFieldStart = selectedMoves < requestedMoves;
-            var foundWhitespaceBoundary =
-                lastToken is not null && lastToken.CaretMoveCount < selectedMoves;
-
-            if (lastToken is not null && (foundWhitespaceBoundary || reachedFieldStart))
-            {
-                var excessSelection = selectedMoves - lastToken.CaretMoveCount;
-                if (!NativeMethods.SendModifiedKeyRepeated(
-                        NativeMethods.VkShift,
-                        NativeMethods.VkRight,
-                        excessSelection))
-                {
-                    return null;
-                }
-
-                return lastToken;
-            }
-
-            if (reachedFieldStart)
-            {
-                NativeMethods.SendModifiedKeyRepeated(
-                    NativeMethods.VkShift,
-                    NativeMethods.VkRight,
-                    selectedMoves);
-                return null;
-            }
-
-            probeSize = Math.Min(probeSize * 2, MaximumLastTokenProbeSize);
-        }
-
-        return null;
     }
 
     private static async Task WaitForModifierKeysAsync()

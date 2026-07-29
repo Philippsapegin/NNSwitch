@@ -413,12 +413,20 @@ internal static class Program
             SetForegroundWindow(form.Handle);
             PumpMessages(100);
             NativeMethods.SendChord((ushort)Keys.F7);
-            PumpMessages(1600);
+            var maximumPunctuatedSelectionLength = 0;
+            PumpMessages(
+                1600,
+                () => maximumPunctuatedSelectionLength = Math.Max(
+                    maximumPunctuatedSelectionLength,
+                    textBox.SelectionLength));
             var convertedPunctuatedToken =
                 KeyboardLayoutService.ConvertText(punctuatedToken, english, russian);
             Assert(
                 textBox.Text == $"Prefix {convertedPunctuatedToken}",
                 "Last-word switching treats apostrophes, colons, and brackets as part of the token.");
+            Assert(
+                maximumPunctuatedSelectionLength <= punctuatedToken.Length,
+                "Last-word switching never selects text before the token boundary.");
 
             var longToken = $"({new string('g', 70)}:'n)";
             textBox.Text = $"Prefix {longToken}";
@@ -433,12 +441,20 @@ internal static class Program
             SetForegroundWindow(form.Handle);
             PumpMessages(100);
             NativeMethods.SendChord((ushort)Keys.F7);
-            PumpMessages(1600);
+            var maximumLongSelectionLength = 0;
+            PumpMessages(
+                1600,
+                () => maximumLongSelectionLength = Math.Max(
+                    maximumLongSelectionLength,
+                    textBox.SelectionLength));
             var convertedLongToken =
                 KeyboardLayoutService.ConvertText(longToken, english, russian);
             Assert(
                 textBox.Text == $"Prefix {convertedLongToken}",
-                "Last-word switching expands its selection beyond the initial probe.");
+                "Last-word switching reads a token beyond the initial probe.");
+            Assert(
+                maximumLongSelectionLength <= longToken.Length,
+                "Long-token switching never selects preceding text.");
 
             textBox.Text = "Ghbdtn? vbh!";
             textBox.SelectionStart = 3;
@@ -555,13 +571,14 @@ internal static class Program
         }
     }
 
-    private static void PumpMessages(int milliseconds)
+    private static void PumpMessages(int milliseconds, Action? observe = null)
     {
         var stopwatch = Stopwatch.StartNew();
         while (stopwatch.ElapsedMilliseconds < milliseconds)
         {
             Application.DoEvents();
-            Thread.Sleep(10);
+            observe?.Invoke();
+            Thread.Sleep(observe is null ? 10 : 1);
         }
     }
 
