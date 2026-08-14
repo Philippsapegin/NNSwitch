@@ -4,10 +4,10 @@ namespace INSwitch.Services;
 
 internal static class ClipboardService
 {
-    private const int ClipboardWriteAttempts = 10;
-    private const int ClipboardWriteRetryDelayMs = 15;
-    private const int ClipboardReadAttempts = 25;
-    private const int ClipboardReadRetryDelayMs = 20;
+    private const int ClipboardWriteAttempts = 30;
+    private const int ClipboardWriteRetryDelayMs = 5;
+    private const int ClipboardReadAttempts = 100;
+    private const int ClipboardReadRetryDelayMs = 5;
 
     internal static async Task<ClipboardSnapshot?> TryCaptureAsync()
     {
@@ -49,28 +49,32 @@ internal static class ClipboardService
         return false;
     }
 
-    internal static async Task<string?> WaitForChangedTextAsync(string marker)
+    internal static async Task<string?> WaitForChangedTextAsync(
+        string marker,
+        int maximumAttempts = ClipboardReadAttempts)
     {
-        for (var attempt = 0; attempt < ClipboardReadAttempts; attempt++)
+        maximumAttempts = Math.Clamp(maximumAttempts, 1, ClipboardReadAttempts);
+        for (var attempt = 0; attempt < maximumAttempts; attempt++)
         {
-            await Task.Delay(ClipboardReadRetryDelayMs);
-
             try
             {
-                if (!Clipboard.ContainsText(TextDataFormat.UnicodeText))
+                if (Clipboard.ContainsText(TextDataFormat.UnicodeText))
                 {
-                    continue;
-                }
-
-                var text = Clipboard.GetText(TextDataFormat.UnicodeText);
-                if (!text.Equals(marker, StringComparison.Ordinal))
-                {
-                    return text;
+                    var text = Clipboard.GetText(TextDataFormat.UnicodeText);
+                    if (!text.Equals(marker, StringComparison.Ordinal))
+                    {
+                        return text;
+                    }
                 }
             }
             catch (ExternalException)
             {
                 // Another process briefly owns the clipboard; retry.
+            }
+
+            if (attempt + 1 < maximumAttempts)
+            {
+                await Task.Delay(ClipboardReadRetryDelayMs);
             }
         }
 

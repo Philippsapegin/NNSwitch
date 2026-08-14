@@ -46,6 +46,12 @@ internal sealed class HotkeySettings
     public HotkeyBinding ActiveField { get; set; } =
         HotkeyBinding.Create(HotkeyModifiers.Control | HotkeyModifiers.Alt, Keys.A);
 
+    public HotkeyBinding UpperCase { get; set; } = new();
+
+    public HotkeyBinding LowerCase { get; set; } = new();
+
+    public HotkeyBinding SentenceCase { get; set; } = new();
+
     public Dictionary<string, TargetLayoutHotkeys> TargetLayouts { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -54,6 +60,9 @@ internal sealed class HotkeySettings
         SelectedText = SelectedText.Clone(),
         LastWord = LastWord.Clone(),
         ActiveField = ActiveField.Clone(),
+        UpperCase = UpperCase.Clone(),
+        LowerCase = LowerCase.Clone(),
+        SentenceCase = SentenceCase.Clone(),
         TargetLayouts = TargetLayouts.ToDictionary(
             pair => pair.Key,
             pair => pair.Value.Clone(),
@@ -65,6 +74,8 @@ internal sealed class HotkeySettings
 
 internal sealed class TargetLayoutHotkeys
 {
+    public HotkeyBinding ActivateLayout { get; set; } = new();
+
     public HotkeyBinding SelectedText { get; set; } = new();
 
     public HotkeyBinding LastWord { get; set; } = new();
@@ -73,6 +84,7 @@ internal sealed class TargetLayoutHotkeys
 
     public TargetLayoutHotkeys Clone() => new()
     {
+        ActivateLayout = ActivateLayout.Clone(),
         SelectedText = SelectedText.Clone(),
         LastWord = LastWord.Clone(),
         ActiveField = ActiveField.Clone()
@@ -81,7 +93,7 @@ internal sealed class TargetLayoutHotkeys
 
 internal sealed class AppSettings
 {
-    internal const int CurrentSchemaVersion = 1;
+    internal const int CurrentSchemaVersion = 3;
 
     public int SchemaVersion { get; set; }
 

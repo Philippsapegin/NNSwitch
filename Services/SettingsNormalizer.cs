@@ -59,6 +59,24 @@ internal static class SettingsNormalizer
             changed = true;
         }
 
+        if (settings.Hotkeys.UpperCase is null)
+        {
+            settings.Hotkeys.UpperCase = defaults.UpperCase;
+            changed = true;
+        }
+
+        if (settings.Hotkeys.LowerCase is null)
+        {
+            settings.Hotkeys.LowerCase = defaults.LowerCase;
+            changed = true;
+        }
+
+        if (settings.Hotkeys.SentenceCase is null)
+        {
+            settings.Hotkeys.SentenceCase = defaults.SentenceCase;
+            changed = true;
+        }
+
         if (settings.Hotkeys.TargetLayouts is null)
         {
             settings.Hotkeys.TargetLayouts =
@@ -151,6 +169,12 @@ internal static class SettingsNormalizer
     private static bool NormalizeBindings(TargetLayoutHotkeys targetHotkeys)
     {
         var changed = false;
+        if (targetHotkeys.ActivateLayout is null)
+        {
+            targetHotkeys.ActivateLayout = new HotkeyBinding();
+            changed = true;
+        }
+
         if (targetHotkeys.SelectedText is null)
         {
             targetHotkeys.SelectedText = new HotkeyBinding();

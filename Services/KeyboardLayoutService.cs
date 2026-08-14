@@ -73,16 +73,48 @@ internal static class KeyboardLayoutService
             layout.Id.Equals(targetId, StringComparison.OrdinalIgnoreCase));
     }
 
+    internal static KeyboardLayoutDescriptor ResolveSourceForText(
+        string text,
+        KeyboardLayoutDescriptor detectedSource,
+        IReadOnlyList<KeyboardLayoutDescriptor> layouts)
+    {
+        var bestSource = detectedSource;
+        var bestScore = CountMappableLetters(text, detectedSource);
+
+        foreach (var layout in layouts)
+        {
+            if (layout.Id.Equals(detectedSource.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var score = CountMappableLetters(text, layout);
+            if (score > bestScore)
+            {
+                bestSource = layout;
+                bestScore = score;
+            }
+        }
+
+        return bestSource;
+    }
+
     internal static bool ActivateForForegroundWindow(KeyboardLayoutDescriptor target)
     {
         var foregroundWindow = NativeMethods.GetForegroundWindow();
-        return foregroundWindow != IntPtr.Zero &&
-               NativeMethods.PostMessage(
-                   foregroundWindow,
-                   NativeMethods.WmInputLanguageChangeRequest,
-                   IntPtr.Zero,
-                   target.Handle);
+        return ActivateForWindow(foregroundWindow, target);
     }
+
+    internal static bool ActivateForWindow(
+        IntPtr foregroundWindow,
+        KeyboardLayoutDescriptor target) =>
+        foregroundWindow != IntPtr.Zero &&
+        NativeMethods.GetForegroundWindow() == foregroundWindow &&
+        NativeMethods.PostMessage(
+            foregroundWindow,
+            NativeMethods.WmInputLanguageChangeRequest,
+            IntPtr.Zero,
+            target.Handle);
 
     internal static string ConvertText(
         string text,
@@ -141,8 +173,63 @@ internal static class KeyboardLayoutService
         return result.ToString();
     }
 
+    internal static string? TryTranslatePhysicalKey(
+        uint virtualKey,
+        uint scanCode,
+        KeyboardLayoutDescriptor layout,
+        bool shift,
+        bool capsLock,
+        bool numLock)
+    {
+        var keyboardState = new byte[256];
+        if (shift)
+        {
+            keyboardState[NativeMethods.VkShift] = 0x80;
+        }
+
+        if (capsLock)
+        {
+            keyboardState[NativeMethods.VkCapital] = 0x01;
+        }
+
+        if (numLock)
+        {
+            keyboardState[NativeMethods.VkNumlock] = 0x01;
+        }
+
+        var buffer = new StringBuilder(8);
+        var translatedLength = NativeMethods.ToUnicodeEx(
+            virtualKey,
+            scanCode,
+            keyboardState,
+            buffer,
+            buffer.Capacity,
+            NativeMethods.TounicodeNoStateChange,
+            layout.Handle);
+        return translatedLength > 0
+            ? buffer.ToString(0, translatedLength)
+            : null;
+    }
+
     internal static string GetId(IntPtr handle) =>
         unchecked((uint)handle.ToInt64()).ToString("X8", CultureInfo.InvariantCulture);
+
+    private static int CountMappableLetters(
+        string text,
+        KeyboardLayoutDescriptor layout)
+    {
+        var count = 0;
+        foreach (var character in text)
+        {
+            if (char.IsLetter(character) &&
+                NativeMethods.VkKeyScanEx(character, layout.Handle) != -1)
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
 
     private static byte[] CreateKeyboardState(int shiftState)
     {

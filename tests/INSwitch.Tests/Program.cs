@@ -1,5 +1,6 @@
 using System.Text;
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using INSwitch.Interop;
 using INSwitch.Models;
@@ -14,6 +15,8 @@ internal static class Program
     private static int Main(string[] args)
     {
         Console.OutputEncoding = Encoding.UTF8;
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
 
         try
         {
@@ -22,8 +25,10 @@ internal static class Program
             TestSettingsDefaults(layouts);
             TestSettingsCleanup(layouts);
             TestSettingsPersistence(layouts);
+            TestUnifiedHotkeysForm(layouts);
             TestLastTokenSelection();
             TestHotkeyFormatting();
+            TestTextCaseConversion();
             TestRussianEnglishConversion(layouts);
 
             if (args.Contains("--integration", StringComparer.OrdinalIgnoreCase))
@@ -59,6 +64,11 @@ internal static class Program
         Assert(
             settings.SchemaVersion == AppSettings.CurrentSchemaVersion,
             "Settings use the current schema version.");
+        Assert(
+            !settings.Hotkeys.UpperCase.IsConfigured &&
+            !settings.Hotkeys.LowerCase.IsConfigured &&
+            !settings.Hotkeys.SentenceCase.IsConfigured,
+            "Selected-text case hotkeys default to empty.");
 
         foreach (var source in layouts)
         {
@@ -69,6 +79,7 @@ internal static class Program
                 settings.Hotkeys.TargetLayouts.ContainsKey(source.Id),
                 $"Language-specific hotkeys exist for {source.DisplayName}.");
             Assert(
+                !settings.Hotkeys.TargetLayouts[source.Id].ActivateLayout.IsConfigured &&
                 !settings.Hotkeys.TargetLayouts[source.Id].SelectedText.IsConfigured &&
                 !settings.Hotkeys.TargetLayouts[source.Id].LastWord.IsConfigured &&
                 !settings.Hotkeys.TargetLayouts[source.Id].ActiveField.IsConfigured,
@@ -110,16 +121,62 @@ internal static class Program
             "An ordinary letter can be used without a modifier.");
     }
 
+    private static void TestTextCaseConversion()
+    {
+        var culture = CultureInfo.GetCultureInfo("ru-RU");
+        Assert(
+            TextCaseConverter.Convert(
+                "Привет, World!",
+                TextCaseMode.UpperCase,
+                culture) == "ПРИВЕТ, WORLD!",
+            "UPPERCASE handles mixed Russian and English text.");
+        Assert(
+            TextCaseConverter.Convert(
+                "Привет, WORLD!",
+                TextCaseMode.LowerCase,
+                culture) == "привет, world!",
+            "lowercase handles mixed Russian and English text.");
+        Assert(
+            TextCaseConverter.Convert(
+                "  пРИВЕТ, МИР! эТО ТЕСТ.\r\nнОВАЯ СТРОКА?",
+                TextCaseMode.SentenceCase,
+                culture) == "  Привет, мир! Это тест.\r\nНовая строка?",
+            "Sentence case capitalizes every selected sentence and line.");
+    }
+
     private static void TestLastTokenSelection()
     {
         AssertLastToken("prefix ghbdtn:", "ghbdtn:");
         AssertLastToken("prefix (ghbdtn:'n)", "(ghbdtn:'n)");
         AssertLastToken("prefix ltkf'n", "ltkf'n");
+        AssertLastToken("prefix Ghj[jlbvtw", "Ghj[jlbvtw");
+        AssertLastToken("prefix [ghbdtn]", "[ghbdtn]");
         AssertLastToken("prefix ghbdtn:  ", "ghbdtn:  ");
         AssertLastToken("first line\r\nsecond", "second");
+        AssertLastTokenAround("prefix (ghbdtn", ")", "ghbdtn");
+        AssertLastTokenAround("prefix \"ghbdtn", "\"", "ghbdtn");
+        AssertLastTokenAround("prefix 'ghbdtn", "'", "ghbdtn");
+        AssertLastTokenAround("prefix ([\"ghbdtn", "\"])", "ghbdtn");
+        AssertLastTokenAround("prefix [ghj[jlbvtw", "]", "ghj[jlbvtw");
         Assert(
             LastTokenSelection.FromTextBeforeCaret(" \t\r\n") is null,
             "A whitespace-only prefix has no last token.");
+        Assert(
+            LastTokenSelection.FromTextAroundCaret("prefix (", ")") is null,
+            "An empty delimiter pair has no last word.");
+    }
+
+    private static void AssertLastTokenAround(
+        string textBeforeCaret,
+        string textAfterCaret,
+        string expected)
+    {
+        var selection = LastTokenSelection.FromTextAroundCaret(
+            textBeforeCaret,
+            textAfterCaret);
+        Assert(
+            selection?.Text == expected,
+            $"Last-token selection preserves a paired wrapper: {expected}");
     }
 
     private static void AssertLastToken(string textBeforeCaret, string expected)
@@ -207,6 +264,48 @@ internal static class Program
             "A missing target layout is replaced with a valid target or no target.");
     }
 
+    private static void TestUnifiedHotkeysForm(
+        IReadOnlyList<KeyboardLayoutDescriptor> layouts)
+    {
+        var settings = new AppSettings();
+        SettingsNormalizer.Normalize(settings, layouts);
+        var source = layouts[0];
+        var newTargetId = layouts
+            .FirstOrDefault(layout => !layout.Id.Equals(
+                source.Id,
+                StringComparison.OrdinalIgnoreCase))?.Id ?? string.Empty;
+
+        using var form = new HotkeysForm(
+            settings.Hotkeys,
+            settings.SwitchTargets,
+            layouts);
+        var targetGrid = form.Controls.Find(
+                "TargetMappingGrid",
+                searchAllChildren: true)
+            .OfType<DataGridView>()
+            .Single();
+        var sourceRow = targetGrid.Rows
+            .Cast<DataGridViewRow>()
+            .Single(row => row.Tag as string == source.Id);
+        sourceRow.Cells["Target"].Value = newTargetId;
+
+        var saveButton = form.Controls.Find(
+                "SaveHotkeysButton",
+                searchAllChildren: true)
+            .OfType<Button>()
+            .Single();
+        saveButton.PerformClick();
+
+        Assert(
+            form.SwitchTargetsResult[source.Id] == newTargetId,
+            "The unified Hotkeys window saves default correction targets.");
+        Assert(
+            form.Result.SelectedText.Key == settings.Hotkeys.SelectedText.Key &&
+            form.Result.LastWord.Key == settings.Hotkeys.LastWord.Key &&
+            form.Result.ActiveField.Key == settings.Hotkeys.ActiveField.Key,
+            "The unified Hotkeys window saves universal hotkeys in the same action.");
+    }
+
     private static void TestRussianEnglishConversion(IReadOnlyList<KeyboardLayoutDescriptor> layouts)
     {
         var english = layouts.FirstOrDefault(layout => layout.TwoLetterLanguage == "en");
@@ -223,6 +322,29 @@ internal static class Program
         var englishText = KeyboardLayoutService.ConvertText("руддщ цщкдв", russian, english);
         Assert(englishText == "hello world", "Russian key positions convert to English text.");
 
+        var bracketInsideWord = KeyboardLayoutService.ConvertText(
+            "Ghj[jlbvtw",
+            english,
+            russian);
+        Assert(
+            bracketInsideWord == "Проходимец",
+            "A bracket key inside a mistyped word is converted as a letter.");
+        Assert(
+            KeyboardLayoutService.ResolveSourceForText("ГШ", english, layouts) == russian,
+            "Russian text overrides a stale English foreground-window layout.");
+        Assert(
+            KeyboardLayoutService.ResolveSourceForText("UI", russian, layouts) == english,
+            "English text overrides a stale Russian foreground-window layout.");
+        Assert(
+            KeyboardLayoutService.ConvertText(
+                "ГШ",
+                KeyboardLayoutService.ResolveSourceForText("ГШ", english, layouts),
+                english) == "UI",
+            "A Firefox-style stale layout still converts ГШ to UI.");
+        Assert(
+            KeyboardLayoutService.ResolveSourceForText("123", russian, layouts) == russian,
+            "Non-letter text does not override the detected layout.");
+
     }
 
     private static void CaptureUi(
@@ -230,28 +352,19 @@ internal static class Program
         string outputDirectory)
     {
         Directory.CreateDirectory(outputDirectory);
-        Application.EnableVisualStyles();
-        Application.SetCompatibleTextRenderingDefault(false);
-
-        var hotkeySettings = HotkeySettings.Defaults;
-        foreach (var layout in layouts)
-        {
-            hotkeySettings.TargetLayouts[layout.Id] = new TargetLayoutHotkeys();
-        }
-
-        using var hotkeysForm = new HotkeysForm(hotkeySettings, layouts);
-        SaveFormImage(hotkeysForm, Path.Combine(outputDirectory, "hotkeys.png"));
 
         var settings = new AppSettings();
         SettingsNormalizer.Normalize(settings, layouts);
-        using var targetsForm = new SwitchTargetsForm(layouts, settings.SwitchTargets);
-        SaveFormImage(targetsForm, Path.Combine(outputDirectory, "switch-targets.png"));
+        using var hotkeysForm = new HotkeysForm(
+            settings.Hotkeys,
+            settings.SwitchTargets,
+            layouts);
+        SaveFormImage(hotkeysForm, Path.Combine(outputDirectory, "hotkeys.png"));
 
         using var trayMenu = new ContextMenuStrip { ShowCheckMargin = false };
         trayMenu.Items.AddRange(new ToolStripItem[]
         {
             new ToolStripMenuItem("Hotkeys..."),
-            new ToolStripMenuItem("Switch to..."),
             new ToolStripSeparator(),
             new ToolStripMenuItem("Exit")
         });
@@ -293,6 +406,14 @@ internal static class Program
             HotkeyBinding.Create(HotkeyModifiers.None, Keys.F7);
         testSettings.Hotkeys.ActiveField =
             HotkeyBinding.Create(HotkeyModifiers.None, Keys.F9);
+        testSettings.Hotkeys.UpperCase =
+            HotkeyBinding.Create(HotkeyModifiers.None, Keys.F10);
+        testSettings.Hotkeys.LowerCase =
+            HotkeyBinding.Create(HotkeyModifiers.None, Keys.F11);
+        testSettings.Hotkeys.SentenceCase =
+            HotkeyBinding.Create(HotkeyModifiers.None, Keys.F12);
+        testSettings.Hotkeys.TargetLayouts[english.Id].ActivateLayout =
+            HotkeyBinding.Create(HotkeyModifiers.None, Keys.F5);
         var russianTarget = layouts.FirstOrDefault(layout => layout.TwoLetterLanguage == "ru");
         if (russianTarget is not null)
         {
@@ -305,14 +426,18 @@ internal static class Program
         var originalInputLanguage = InputLanguage.CurrentInputLanguage;
         try
         {
-            appProcess = Process.Start(new ProcessStartInfo
+            var startInfo = new ProcessStartInfo
             {
                 FileName = Path.GetFullPath(executablePath),
-                UseShellExecute = true,
+                UseShellExecute = false,
                 WindowStyle = ProcessWindowStyle.Hidden
-            }) ?? throw new InvalidOperationException("Could not start NN Switch.");
+            };
+            startInfo.Environment["NN_SWITCH_TEST_INSTANCE"] =
+                Guid.NewGuid().ToString("N");
+            appProcess = Process.Start(startInfo) ??
+                throw new InvalidOperationException("Could not start NN Switch.");
 
-            PumpMessages(750);
+            PumpMessages(1500);
             appProcess.Refresh();
             Assert(!appProcess.HasExited, "The tray process remains running after startup.");
             Assert(appProcess.MainWindowHandle == IntPtr.Zero, "The tray process has no main window.");
@@ -321,6 +446,11 @@ internal static class Program
                 .First(language =>
                     KeyboardLayoutService.GetId(language.Handle)
                         .Equals(english.Id, StringComparison.OrdinalIgnoreCase));
+            var russianInputLanguage = InputLanguage.InstalledInputLanguages
+                .Cast<InputLanguage>()
+                .First(language =>
+                    KeyboardLayoutService.GetId(language.Handle)
+                        .Equals(russian.Id, StringComparison.OrdinalIgnoreCase));
             InputLanguage.CurrentInputLanguage = englishInputLanguage;
 
             using var form = new Form
@@ -331,42 +461,115 @@ internal static class Program
                 ShowInTaskbar = false,
                 TopMost = true
             };
-            using var textBox = new TextBox
+            using var textBox = new CopyLineTextBox
             {
                 Multiline = true,
                 Dock = DockStyle.Fill,
                 Text = "Ghbdtn? vbh!",
                 Font = new Font("Segoe UI", 13F)
             };
+            using var browserLikeField = new BrowserLikeTextControl
+            {
+                Dock = DockStyle.Fill,
+                Visible = false
+            };
+            form.Controls.Add(browserLikeField);
             form.Controls.Add(textBox);
             form.Show();
             form.Activate();
             textBox.Focus();
             textBox.SelectAll();
             SetForegroundWindow(form.Handle);
+
+            const string clipboardSentinel = "INSwitch integration clipboard";
+            Clipboard.SetText(clipboardSentinel);
+            EnsureWindowLayout(form, textBox, russianInputLanguage, russian, layouts);
+            const string layoutOnlyText = "Layout switch must not edit this text";
+            textBox.Text = layoutOnlyText;
+            textBox.SelectionStart = textBox.TextLength;
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F5);
+            var directLayoutChanged = PumpMessagesUntil(
+                2000,
+                () => KeyboardLayoutService.GetForWindow(form.Handle, layouts)?.Id
+                    .Equals(english.Id, StringComparison.OrdinalIgnoreCase) == true);
+            PumpMessages(100);
+            Assert(
+                directLayoutChanged,
+                "A layout hotkey switches the active window directly to its target layout.");
+            Assert(
+                textBox.Text == layoutOnlyText &&
+                textBox.SelectionStart == textBox.TextLength &&
+                textBox.SelectionLength == 0,
+                "A layout hotkey changes neither text nor the caret.");
+            Assert(
+                ClipboardTextEquals(clipboardSentinel),
+                "A layout hotkey never touches the system clipboard.");
+
+            textBox.Text = "Ghbdtn? vbh!";
             InputLanguage.CurrentInputLanguage = englishInputLanguage;
             NativeMethods.PostMessage(
                 form.Handle,
                 NativeMethods.WmInputLanguageChangeRequest,
                 IntPtr.Zero,
                 english.Handle);
-            PumpMessages(100);
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            textBox.SelectAll();
             var detectedLayout = KeyboardLayoutService.GetCurrent(layouts);
             Console.WriteLine(
                 $"Integration source layout: expected={english.Id}, actual={detectedLayout?.Id ?? "(none)"}; foreground=0x{NativeMethods.GetForegroundWindow():X}");
 
-            const string clipboardSentinel = "INSwitch integration clipboard";
             Clipboard.SetText(clipboardSentinel);
-            NativeMethods.SendChord((ushort)Keys.F6);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F6);
             PumpMessages(1600);
 
             Console.WriteLine($"Integration text after hotkey: [{textBox.Text}]");
-            Assert(textBox.Text == "Привет, мир!", "The registered selected-text hotkey replaces text in another process.");
+            Assert(textBox.Text == "Привет, мир!", "The selected-text command replaces text in the active control.");
             Assert(
                 Clipboard.ContainsText() && Clipboard.GetText() == clipboardSentinel,
                 "The selected-text command restores the previous clipboard.");
 
-            textBox.Text = "Ghbdtn? vbh!";
+            textBox.Text = "Mixed регистр";
+            textBox.SelectAll();
+            textBox.CopyCommandCount = 0;
+            Clipboard.SetText(clipboardSentinel);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F10);
+            PumpMessagesUntil(2000, () => textBox.Text == "MIXED РЕГИСТР");
+            PumpMessages(100);
+            Assert(
+                textBox.Text == "MIXED РЕГИСТР" && textBox.CopyCommandCount == 0,
+                "UPPERCASE replaces a native selection without a copy command.");
+            Assert(
+                ClipboardTextEquals(clipboardSentinel),
+                "Native UPPERCASE never touches the system clipboard.");
+
+            textBox.Text = "Mixed РЕГИСТР";
+            textBox.SelectAll();
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F11);
+            PumpMessagesUntil(2000, () => textBox.Text == "mixed регистр");
+            PumpMessages(100);
+            Assert(
+                textBox.Text == "mixed регистр",
+                "lowercase replaces a native selection.");
+
+            textBox.Text = "hELLO, WORLD! tHIS IS A TEST.\r\nnEW LINE?";
+            textBox.SelectAll();
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F12);
+            PumpMessagesUntil(
+                2000,
+                () => textBox.Text == "Hello, world! This is a test.\r\nNew line?");
+            PumpMessages(100);
+            if (textBox.Text != "Hello, world! This is a test.\r\nNew line?")
+            {
+                Console.WriteLine(
+                    $"Sentence-case failure: actual=[{textBox.Text.Replace("\r", "\\r").Replace("\n", "\\n")}], " +
+                    $"selection={textBox.SelectionStart}+{textBox.SelectionLength}, " +
+                    $"copyCommands={textBox.CopyCommandCount}");
+            }
+            Assert(
+                textBox.Text == "Hello, world! This is a test.\r\nNew line?",
+                "Sentence case handles multiple sentences and lines in a native selection.");
+
+            textBox.Text = "ghbdtn";
             textBox.SelectionStart = textBox.TextLength;
             InputLanguage.CurrentInputLanguage = englishInputLanguage;
             NativeMethods.PostMessage(
@@ -376,12 +579,292 @@ internal static class Program
                 english.Handle);
             textBox.Focus();
             SetForegroundWindow(form.Handle);
-            PumpMessages(100);
-            NativeMethods.SendChord((ushort)Keys.F7);
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            NativeMethods.SendUnmarkedChord(NativeMethods.VkEscape);
+            PumpMessages(50);
+            Clipboard.SetText(clipboardSentinel);
+            textBox.CopyCommandCount = 0;
+            textBox.AllowedCopyCommandCount = 0;
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            var nativeVisibleSelectionObserved = false;
+            PumpMessages(
+                800,
+                () => nativeVisibleSelectionObserved |=
+                    textBox.RedrawEnabled && textBox.SelectionLength > 0);
+            textBox.AllowedCopyCommandCount = int.MaxValue;
+            Assert(
+                textBox.Text == "привет",
+                "A native edit control replaces the last word without clipboard commands.");
+            Assert(
+                textBox.CopyCommandCount == 0 &&
+                textBox.SelectionLength == 0 &&
+                !nativeVisibleSelectionObserved,
+                "The native edit path uses neither copying nor a visible selection.");
+            Assert(
+                Clipboard.ContainsText() && Clipboard.GetText() == clipboardSentinel,
+                "The native edit path never touches the system clipboard.");
+
+            textBox.Text = "ghbdtn";
+            textBox.SelectionStart = textBox.TextLength;
+            InputLanguage.CurrentInputLanguage = englishInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                english.Handle);
+            textBox.Focus();
+            SetForegroundWindow(form.Handle);
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            NativeMethods.SendUnmarkedChord(NativeMethods.VkEscape);
+            PumpMessages(50);
+            Clipboard.SetText(clipboardSentinel);
+            textBox.CopyCommandCount = 0;
+            textBox.RejectNativeReplacement = true;
+            var failedNativeVisibleSelection = false;
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            PumpMessages(
+                800,
+                () => failedNativeVisibleSelection |=
+                    textBox.RedrawEnabled && textBox.SelectionLength > 0);
+            textBox.RejectNativeReplacement = false;
+            Assert(
+                textBox.Text == "ghbdtn" &&
+                textBox.SelectionStart == textBox.TextLength &&
+                textBox.SelectionLength == 0,
+                "A rejected native replacement preserves text and restores the original caret.");
+            Assert(
+                textBox.RedrawEnabled && !failedNativeVisibleSelection,
+                "A rejected native replacement cannot leave redraw disabled or expose a selection.");
+            Assert(
+                textBox.CopyCommandCount == 0 &&
+                ClipboardTextEquals(clipboardSentinel),
+                "A rejected native replacement never falls through to clipboard mutation.");
+
+            textBox.Visible = false;
+            browserLikeField.Visible = true;
+            browserLikeField.BringToFront();
+
+            const string browserCaseText = "Browser Mixed регистр";
+            browserLikeField.SetTextAndSelection(
+                browserCaseText,
+                0,
+                browserCaseText.Length);
+            browserLikeField.Focus();
+            SetForegroundWindow(form.Handle);
+            Clipboard.SetText(clipboardSentinel);
+            browserLikeField.CopyCommandCount = 0;
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F10);
+            PumpMessagesUntil(
+                3000,
+                () => browserLikeField.Text == "BROWSER MIXED РЕГИСТР" &&
+                      ClipboardTextEquals(clipboardSentinel));
+            Assert(
+                browserLikeField.Text == "BROWSER MIXED РЕГИСТР" &&
+                browserLikeField.CopyCommandCount > 0,
+                "UPPERCASE uses the verified fallback in a browser-like field.");
+            Assert(
+                ClipboardTextEquals(clipboardSentinel),
+                "The browser-like case fallback restores the previous clipboard.");
+
+            foreach (var allowedCopyCommands in new[] { 1, 2 })
+            {
+                browserLikeField.SetTextAndCaret("ghbdtn", 6);
+                InputLanguage.CurrentInputLanguage = englishInputLanguage;
+                NativeMethods.PostMessage(
+                    form.Handle,
+                    NativeMethods.WmInputLanguageChangeRequest,
+                    IntPtr.Zero,
+                    english.Handle);
+                browserLikeField.Focus();
+                SetForegroundWindow(form.Handle);
+                EnsureWindowLayout(
+                    form,
+                    browserLikeField,
+                    englishInputLanguage,
+                    english,
+                    layouts);
+                NativeMethods.SendUnmarkedChord(NativeMethods.VkEscape);
+                PumpMessages(50);
+                Clipboard.SetText(clipboardSentinel);
+                browserLikeField.CopyCommandCount = 0;
+                browserLikeField.AllowedCopyCommandCount = allowedCopyCommands;
+                NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+                var expectedCopyCommands = allowedCopyCommands == 1 ? 2 : 4;
+                PumpMessagesUntil(
+                    3000,
+                    () => browserLikeField.CopyCommandCount >= expectedCopyCommands &&
+                          browserLikeField.CaretIndex == browserLikeField.Text.Length &&
+                          browserLikeField.SelectionLength == 0 &&
+                          ClipboardTextEquals(clipboardSentinel));
+                browserLikeField.AllowedCopyCommandCount = int.MaxValue;
+                Assert(
+                    browserLikeField.Text == "ghbdtn",
+                    $"A browser-like rejected copy in phase {allowedCopyCommands} never changes text.");
+                Assert(
+                    browserLikeField.CaretIndex == browserLikeField.Text.Length &&
+                    browserLikeField.SelectionLength == 0,
+                    $"A browser-like rejected copy in phase {allowedCopyCommands} restores the caret without selection.");
+                Assert(
+                    Clipboard.ContainsText() && Clipboard.GetText() == clipboardSentinel,
+                    $"A browser-like rejected copy in phase {allowedCopyCommands} restores the clipboard.");
+            }
+
+            browserLikeField.SetTextAndCaret("ghbdtn", 6);
+            InputLanguage.CurrentInputLanguage = englishInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                english.Handle);
+            browserLikeField.Focus();
+            SetForegroundWindow(form.Handle);
+            EnsureWindowLayout(
+                form,
+                browserLikeField,
+                englishInputLanguage,
+                english,
+                layouts);
+            NativeMethods.SendUnmarkedChord(NativeMethods.VkEscape);
+            PumpMessages(50);
+            Clipboard.SetText(clipboardSentinel);
+            browserLikeField.CopyCommandCount = 0;
+            browserLikeField.Trace.Clear();
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            PumpMessagesUntil(
+                3000,
+                () => browserLikeField.Text == "привет" &&
+                      browserLikeField.SelectionLength == 0 &&
+                      ClipboardTextEquals(clipboardSentinel));
+            if (browserLikeField.Text != "привет")
+            {
+                Console.WriteLine(
+                    $"Browser fallback failure: actual=[{browserLikeField.Text}], " +
+                    $"caret={browserLikeField.CaretIndex}, " +
+                    $"selection={browserLikeField.SelectionLength}, " +
+                    $"copyCommands={browserLikeField.CopyCommandCount}, " +
+                    $"trace=[{string.Join("; ", browserLikeField.Trace)}], " +
+                    $"clipboard=[{(Clipboard.ContainsText() ? Clipboard.GetText() : "(non-text)")}]");
+            }
+
+            Assert(
+                browserLikeField.Text == "привет",
+                "A browser-like field still converts existing text through the verified fallback.");
+            Assert(
+                browserLikeField.CopyCommandCount > 0 &&
+                browserLikeField.SelectionLength == 0,
+                "The browser fallback completes without leaving a selection.");
+            Assert(
+                Clipboard.ContainsText() && Clipboard.GetText() == clipboardSentinel,
+                "The browser fallback restores the previous clipboard.");
+
+            browserLikeField.SetTextAndCaret("ghbdtn", 6);
+            InputLanguage.CurrentInputLanguage = englishInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                english.Handle);
+            browserLikeField.Focus();
+            SetForegroundWindow(form.Handle);
+            EnsureWindowLayout(
+                form,
+                browserLikeField,
+                englishInputLanguage,
+                english,
+                layouts);
+            NativeMethods.SendUnmarkedChord(NativeMethods.VkEscape);
+            PumpMessages(50);
+            Clipboard.SetText(clipboardSentinel);
+            browserLikeField.CopyCommandCount = 0;
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            PumpMessagesUntil(
+                5000,
+                () => browserLikeField.CopyCommandCount >= 6 &&
+                      browserLikeField.Text == "ghbdtn" &&
+                      browserLikeField.SelectionLength == 0 &&
+                      ClipboardTextEquals(clipboardSentinel));
+            Assert(
+                browserLikeField.CopyCommandCount >= 6 &&
+                browserLikeField.Text == "ghbdtn",
+                "A second hotkey pressed during an operation is queued instead of discarded.");
+            Assert(
+                browserLikeField.SelectionLength == 0 &&
+                ClipboardTextEquals(clipboardSentinel),
+                "Queued browser operations finish with no selection and the original clipboard.");
+
+            browserLikeField.Visible = false;
+            textBox.Visible = true;
+            textBox.BringToFront();
+
+            textBox.Text = "Ghbdtn? vbh!";
+            textBox.CopyCommandCount = 0;
+            textBox.SelectionStart = textBox.TextLength;
+            InputLanguage.CurrentInputLanguage = englishInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                english.Handle);
+            textBox.Focus();
+            SetForegroundWindow(form.Handle);
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
             PumpMessages(1600);
+            if (textBox.Text != "Ghbdtn? мир!")
+            {
+                Console.WriteLine(
+                    $"Last-word failure: actual=[{textBox.Text}], " +
+                    $"selection={textBox.SelectionStart}+{textBox.SelectionLength}, " +
+                    $"copyCommands={textBox.CopyCommandCount}, " +
+                    $"clipboard=[{(Clipboard.ContainsText() ? Clipboard.GetText() : "(non-text)")}]");
+            }
             Assert(
                 textBox.Text == "Ghbdtn? мир!",
-                "The registered last-word hotkey replaces only the word before the caret.");
+                "The last-word command replaces only the word before the caret.");
+
+            textBox.Text = "g";
+            textBox.CopyCommandCount = 0;
+            textBox.SelectionStart = textBox.TextLength;
+            InputLanguage.CurrentInputLanguage = englishInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                english.Handle);
+            textBox.Focus();
+            SetForegroundWindow(form.Handle);
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            PumpMessages(1600);
+            if (textBox.Text != KeyboardLayoutService.ConvertText("g", english, russian))
+            {
+                Console.WriteLine(
+                    $"One-character failure: actual=[{textBox.Text}], " +
+                    $"selection={textBox.SelectionStart}+{textBox.SelectionLength}, " +
+                    $"copyCommands={textBox.CopyCommandCount}");
+            }
+
+            Assert(
+                textBox.Text == KeyboardLayoutService.ConvertText("g", english, russian),
+                "Last-word switching replaces a one-character token.");
+
+            textBox.Text = "ГШ";
+            textBox.SelectionStart = textBox.TextLength;
+            InputLanguage.CurrentInputLanguage = englishInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                english.Handle);
+            textBox.Focus();
+            SetForegroundWindow(form.Handle);
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            PumpMessages(1600);
+            Assert(
+                textBox.Text == "UI",
+                "Last-word switching converts ГШ to UI when the browser window reports a stale English layout.");
 
             textBox.Text = "Ghbdtn? vbh! ";
             textBox.SelectionStart = textBox.TextLength;
@@ -393,8 +876,8 @@ internal static class Program
                 english.Handle);
             textBox.Focus();
             SetForegroundWindow(form.Handle);
-            PumpMessages(100);
-            NativeMethods.SendChord((ushort)Keys.F7);
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
             PumpMessages(1600);
             Assert(
                 textBox.Text == "Ghbdtn? мир! ",
@@ -411,22 +894,136 @@ internal static class Program
                 english.Handle);
             textBox.Focus();
             SetForegroundWindow(form.Handle);
-            PumpMessages(100);
-            NativeMethods.SendChord((ushort)Keys.F7);
-            var maximumPunctuatedSelectionLength = 0;
-            PumpMessages(
-                1600,
-                () => maximumPunctuatedSelectionLength = Math.Max(
-                    maximumPunctuatedSelectionLength,
-                    textBox.SelectionLength));
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            PumpMessages(1600);
             var convertedPunctuatedToken =
                 KeyboardLayoutService.ConvertText(punctuatedToken, english, russian);
+            if (textBox.Text != $"Prefix {convertedPunctuatedToken}")
+            {
+                Console.WriteLine(
+                    $"Punctuated-token failure: actual=[{textBox.Text}], " +
+                    $"selection={textBox.SelectionStart}+{textBox.SelectionLength}, " +
+                    $"clipboard=[{(Clipboard.ContainsText() ? Clipboard.GetText() : "(non-text)")}]");
+            }
             Assert(
                 textBox.Text == $"Prefix {convertedPunctuatedToken}",
                 "Last-word switching treats apostrophes, colons, and brackets as part of the token.");
+            textBox.Text = "(ghbdtn)";
+            textBox.SelectionStart = textBox.TextLength - 1;
+            InputLanguage.CurrentInputLanguage = englishInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                english.Handle);
+            textBox.Focus();
+            SetForegroundWindow(form.Handle);
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            PumpMessages(1600);
+            if (textBox.Text != "(привет)")
+            {
+                Console.WriteLine(
+                    $"Bracket-pair failure: actual=[{textBox.Text}], " +
+                    $"selection={textBox.SelectionStart}+{textBox.SelectionLength}, " +
+                    $"clipboard=[{(Clipboard.ContainsText() ? Clipboard.GetText() : "(non-text)")}]");
+            }
             Assert(
-                maximumPunctuatedSelectionLength <= punctuatedToken.Length,
-                "Last-word switching never selects text before the token boundary.");
+                textBox.Text == "(привет)",
+                "Last-word switching preserves a pre-typed bracket pair around the word.");
+
+            textBox.Text = "\"ghbdtn\"";
+            textBox.SelectionStart = textBox.TextLength - 1;
+            InputLanguage.CurrentInputLanguage = englishInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                english.Handle);
+            textBox.Focus();
+            SetForegroundWindow(form.Handle);
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            PumpMessages(1600);
+            if (textBox.Text != "\"привет\"")
+            {
+                Console.WriteLine(
+                    $"Quote-pair failure: actual=[{textBox.Text}], " +
+                    $"selection={textBox.SelectionStart}+{textBox.SelectionLength}");
+            }
+            Assert(
+                textBox.Text == "\"привет\"",
+                "Last-word switching preserves a pre-typed quote pair around the word.");
+
+            textBox.Text = "Ghj[jlbvtw";
+            textBox.SelectionStart = textBox.TextLength;
+            InputLanguage.CurrentInputLanguage = englishInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                english.Handle);
+            textBox.Focus();
+            SetForegroundWindow(form.Handle);
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            PumpMessages(1600);
+            Assert(
+                textBox.Text == "Проходимец",
+                "Last-word switching converts a bracket key inside a mistyped word.");
+
+            const string reportedCorruptionCase =
+                "jq? xfcnbxyj yt gthtdtltyyjq cnhjrb/yjq b|yjq cnhjrb/Ghf";
+            var reportedTokenStart = reportedCorruptionCase.LastIndexOf(' ') + 1;
+            var reportedPrefix = reportedCorruptionCase[..reportedTokenStart];
+            var reportedToken = reportedCorruptionCase[reportedTokenStart..];
+            var convertedReportedToken = KeyboardLayoutService.ConvertText(
+                reportedToken,
+                english,
+                russian);
+            textBox.Text = reportedCorruptionCase;
+            textBox.SelectionStart = textBox.TextLength;
+            InputLanguage.CurrentInputLanguage = englishInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                english.Handle);
+            textBox.Focus();
+            SetForegroundWindow(form.Handle);
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            PumpMessages(1600);
+            if (textBox.Text != $"{reportedPrefix}{convertedReportedToken}")
+            {
+                Console.WriteLine(
+                    $"Reported-case failure: actual=[{textBox.Text}], " +
+                    $"selection={textBox.SelectionStart}+{textBox.SelectionLength}, " +
+                    $"clipboard=[{(Clipboard.ContainsText() ? Clipboard.GetText() : "(non-text)")}]");
+            }
+            Assert(
+                textBox.Text == $"{reportedPrefix}{convertedReportedToken}",
+                "Copy-line behavior cannot replace text before the final token.");
+
+            textBox.Text = "ghbdtn";
+            textBox.SelectionStart = textBox.TextLength;
+            InputLanguage.CurrentInputLanguage = englishInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                english.Handle);
+            textBox.Focus();
+            SetForegroundWindow(form.Handle);
+            Clipboard.Clear();
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            PumpMessages(1600);
+            Assert(textBox.Text == "привет", "Last-word switching works with an empty clipboard.");
+            Assert(
+                !Clipboard.ContainsText(),
+                "An originally empty clipboard is empty again immediately after switching.");
 
             var longToken = $"({new string('g', 70)}:'n)";
             textBox.Text = $"Prefix {longToken}";
@@ -439,22 +1036,34 @@ internal static class Program
                 english.Handle);
             textBox.Focus();
             SetForegroundWindow(form.Handle);
-            PumpMessages(100);
-            NativeMethods.SendChord((ushort)Keys.F7);
-            var maximumLongSelectionLength = 0;
-            PumpMessages(
-                1600,
-                () => maximumLongSelectionLength = Math.Max(
-                    maximumLongSelectionLength,
-                    textBox.SelectionLength));
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
             var convertedLongToken =
                 KeyboardLayoutService.ConvertText(longToken, english, russian);
+            var longTokenStopwatch = Stopwatch.StartNew();
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            while (longTokenStopwatch.ElapsedMilliseconds < 5000 &&
+                   textBox.Text != $"Prefix {convertedLongToken}")
+            {
+                Application.DoEvents();
+                Thread.Sleep(1);
+            }
+
+            Console.WriteLine(
+                $"Long-token switching latency: {longTokenStopwatch.ElapsedMilliseconds} ms");
+            if (textBox.Text != $"Prefix {convertedLongToken}")
+            {
+                Console.WriteLine(
+                    $"Long-token failure: actual=[{textBox.Text}], " +
+                    $"selection={textBox.SelectionStart}+{textBox.SelectionLength}, " +
+                    $"clipboard=[{(Clipboard.ContainsText() ? Clipboard.GetText() : "(non-text)")}]");
+            }
             Assert(
                 textBox.Text == $"Prefix {convertedLongToken}",
                 "Last-word switching reads a token beyond the initial probe.");
+
             Assert(
-                maximumLongSelectionLength <= longToken.Length,
-                "Long-token switching never selects preceding text.");
+                longTokenStopwatch.ElapsedMilliseconds < 1500,
+                "Long-token switching completes without a multi-second delay.");
 
             textBox.Text = "Ghbdtn? vbh!";
             textBox.SelectionStart = 3;
@@ -466,12 +1075,29 @@ internal static class Program
                 english.Handle);
             textBox.Focus();
             SetForegroundWindow(form.Handle);
-            PumpMessages(100);
-            NativeMethods.SendChord((ushort)Keys.F9);
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F9);
             PumpMessages(1600);
             Assert(
                 textBox.Text == "Привет, мир!",
-                "The registered active-field hotkey replaces the entire text field.");
+                "The active-field command replaces the entire text field.");
+
+            textBox.Text = "Ghbdtn\r\nvbh";
+            textBox.SelectionStart = 2;
+            InputLanguage.CurrentInputLanguage = englishInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                english.Handle);
+            textBox.Focus();
+            SetForegroundWindow(form.Handle);
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F9);
+            PumpMessages(1600);
+            Assert(
+                textBox.Text == "Привет\r\nмир",
+                "Direct Unicode replacement preserves line breaks in a multiline field.");
 
             if (russianTarget is not null)
             {
@@ -485,13 +1111,245 @@ internal static class Program
                     english.Handle);
                 textBox.Focus();
                 SetForegroundWindow(form.Handle);
-                PumpMessages(100);
-                NativeMethods.SendChord((ushort)Keys.F8);
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+                NativeMethods.SendUnmarkedChord((ushort)Keys.F8);
                 PumpMessages(1600);
                 Assert(
                     textBox.Text == "Привет, мир!",
                     "A language-specific hotkey converts selected text directly to its target layout.");
             }
+
+            textBox.Text = string.Empty;
+            textBox.SelectionStart = 0;
+            InputLanguage.CurrentInputLanguage = englishInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                english.Handle);
+            textBox.Focus();
+            SetForegroundWindow(form.Handle);
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            NativeMethods.SendUnmarkedChord(NativeMethods.VkEscape);
+            foreach (var key in new[]
+                     {
+                         Keys.G,
+                         Keys.H,
+                         Keys.B,
+                         Keys.D,
+                         Keys.T,
+                         Keys.N
+                     })
+            {
+                NativeMethods.SendUnmarkedChord((ushort)key);
+            }
+
+            PumpMessages(100);
+            NativeMethods.SendUnmarkedChord(NativeMethods.VkLeft);
+            NativeMethods.SendUnmarkedChord(NativeMethods.VkRight);
+            PumpMessages(100);
+            Clipboard.SetText(clipboardSentinel);
+            textBox.CopyCommandCount = 0;
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            PumpMessages(1600);
+            Assert(
+                textBox.Text == KeyboardLayoutService.ConvertText("ghbdtn", english, russian),
+                "Navigation invalidates private history and the verified fallback still converts the word.");
+            Assert(
+                textBox.CopyCommandCount == 0,
+                "Invalidated private history uses the native edit path instead of stale deletion counts.");
+
+            textBox.Text = string.Empty;
+            textBox.SelectionStart = 0;
+            InputLanguage.CurrentInputLanguage = englishInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                english.Handle);
+            textBox.Focus();
+            SetForegroundWindow(form.Handle);
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            NativeMethods.SendUnmarkedChord(NativeMethods.VkEscape);
+            PumpMessages(50);
+            Clipboard.SetText(clipboardSentinel);
+            textBox.CopyCommandCount = 0;
+            foreach (var key in new[]
+                     {
+                         Keys.G,
+                         Keys.H,
+                         Keys.B,
+                         Keys.D,
+                         Keys.T,
+                         Keys.N
+                     })
+            {
+                NativeMethods.SendUnmarkedChord((ushort)key);
+            }
+
+            PumpMessages(100);
+            Assert(textBox.Text == "ghbdtn", "Physical keyboard input reaches the tracked field.");
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            PumpMessages(800);
+            Assert(
+                textBox.Text == KeyboardLayoutService.ConvertText("ghbdtn", english, russian),
+                "Tracked last-word switching replaces text without reading the field.");
+            Assert(
+                textBox.CopyCommandCount == 0,
+                "Tracked last-word switching never sends Ctrl+C.");
+            Assert(
+                textBox.SelectionLength == 0,
+                "Tracked last-word switching never creates a visible selection.");
+            Assert(
+                Clipboard.ContainsText() && Clipboard.GetText() == clipboardSentinel,
+                "Tracked last-word switching never touches the system clipboard.");
+
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            PumpMessages(800);
+            Assert(
+                textBox.Text == "ghbdtn",
+                "Repeated tracked switching reverses the word without reading the field.");
+            Assert(
+                textBox.CopyCommandCount == 0 && textBox.SelectionLength == 0,
+                "Repeated tracked switching still uses neither copying nor selection.");
+
+            textBox.Text = string.Empty;
+            textBox.SelectionStart = 0;
+            InputLanguage.CurrentInputLanguage = englishInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                english.Handle);
+            textBox.Focus();
+            SetForegroundWindow(form.Handle);
+            EnsureWindowLayout(form, textBox, englishInputLanguage, english, layouts);
+            NativeMethods.SendUnmarkedChord(NativeMethods.VkEscape);
+            PumpMessages(50);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.OemOpenBrackets);
+            PumpMessages(50);
+            textBox.Text = "[]";
+            textBox.SelectionStart = 1;
+            foreach (var key in new[]
+                     {
+                         Keys.G,
+                         Keys.H,
+                         Keys.B,
+                         Keys.D,
+                         Keys.T,
+                         Keys.N
+                     })
+            {
+                NativeMethods.SendUnmarkedChord((ushort)key);
+            }
+
+            PumpMessages(100);
+            Clipboard.SetText(clipboardSentinel);
+            textBox.CopyCommandCount = 0;
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            PumpMessages(1600);
+            if (textBox.Text != "[привет]")
+            {
+                Console.WriteLine(
+                    $"Tracked delimiter-pair failure: actual=[{textBox.Text}], " +
+                    $"selection={textBox.SelectionStart}+{textBox.SelectionLength}, " +
+                    $"copyCommands={textBox.CopyCommandCount}, " +
+                    $"clipboard=[{(Clipboard.ContainsText() ? Clipboard.GetText() : "(non-text)")}]");
+            }
+
+            Assert(
+                textBox.Text == "[привет]",
+                "An editor-created delimiter pair is preserved around a physically typed word.");
+            Assert(
+                textBox.CopyCommandCount == 0,
+                "An ambiguous leading delimiter is verified directly from the native field.");
+
+            textBox.Text = string.Empty;
+            textBox.SelectionStart = 0;
+            InputLanguage.CurrentInputLanguage = russianInputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                russian.Handle);
+            textBox.Focus();
+            SetForegroundWindow(form.Handle);
+            EnsureWindowLayout(form, textBox, russianInputLanguage, russian, layouts);
+            NativeMethods.SendUnmarkedChord(NativeMethods.VkEscape);
+            PumpMessages(50);
+            Clipboard.SetText(clipboardSentinel);
+            textBox.CopyCommandCount = 0;
+            NativeMethods.SendUnmarkedChord(NativeMethods.VkShift, (ushort)Keys.U);
+            NativeMethods.SendUnmarkedChord(NativeMethods.VkShift, (ushort)Keys.I);
+            PumpMessages(100);
+            Assert(textBox.Text == "ГШ", "Russian physical keys produce the reported ГШ case.");
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F7);
+            PumpMessages(800);
+            Assert(
+                textBox.Text == "UI",
+                "Tracked Firefox-style switching converts ГШ to UI without clipboard probing.");
+            Assert(
+                textBox.CopyCommandCount == 0 && textBox.SelectionLength == 0,
+                "The ГШ to UI tracked path uses neither copying nor selection.");
+            Assert(
+                Clipboard.ContainsText() && Clipboard.GetText() == clipboardSentinel,
+                "The ГШ to UI tracked path preserves the system clipboard.");
+
+            textBox.Text = "Must stay unchanged";
+            textBox.SelectionStart = textBox.TextLength;
+            Clipboard.SetText(clipboardSentinel);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F10);
+            PumpMessages(500);
+            Assert(
+                textBox.Text == "Must stay unchanged" &&
+                textBox.SelectionLength == 0 &&
+                ClipboardTextEquals(clipboardSentinel),
+                "A case command without a selection changes neither text nor clipboard.");
+
+            const string rejectedCaseText = "Rejected Mixed Case";
+            textBox.Text = rejectedCaseText;
+            textBox.SelectAll();
+            textBox.CopyCommandCount = 0;
+            textBox.RejectNativeReplacement = true;
+            Clipboard.SetText(clipboardSentinel);
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F10);
+            PumpMessages(500);
+            textBox.RejectNativeReplacement = false;
+            Assert(
+                textBox.Text == rejectedCaseText &&
+                textBox.SelectionStart == 0 &&
+                textBox.SelectionLength == rejectedCaseText.Length,
+                "A rejected native case replacement preserves text and the original selection.");
+            Assert(
+                textBox.RedrawEnabled &&
+                textBox.CopyCommandCount == 0 &&
+                ClipboardTextEquals(clipboardSentinel),
+                "A rejected native case replacement restores redraw without touching the clipboard.");
+
+            textBox.Visible = false;
+            browserLikeField.Visible = true;
+            browserLikeField.BringToFront();
+            const string browserNoSelectionText = "BROWSER MIXED РЕГИСТР";
+            browserLikeField.SetTextAndCaret(
+                browserNoSelectionText,
+                browserNoSelectionText.Length);
+            browserLikeField.Focus();
+            SetForegroundWindow(form.Handle);
+            Clipboard.SetText(clipboardSentinel);
+            browserLikeField.CopyCommandCount = 0;
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F11);
+            PumpMessagesUntil(
+                2000,
+                () => browserLikeField.CopyCommandCount > 0 &&
+                      ClipboardTextEquals(clipboardSentinel));
+            PumpMessages(100);
+            Assert(
+                browserLikeField.Text == browserNoSelectionText &&
+                browserLikeField.SelectionLength == 0,
+                "A browser-like case command without a selection leaves the text unchanged.");
+            Assert(
+                ClipboardTextEquals(clipboardSentinel),
+                "A failed browser-like case command restores the previous clipboard.");
 
             form.Close();
         }
@@ -526,20 +1384,31 @@ internal static class Program
     private static void TestHotkeyDelivery(IReadOnlyList<KeyboardLayoutDescriptor> layouts)
     {
         HotkeyCommand? receivedCommand = null;
-        using var manager = new HotkeyManager(command => receivedCommand = command);
+        var receivedCount = 0;
+        var typedInputTracker = new TypedInputTracker(() => layouts);
+        using var manager = new HotkeyManager(
+            command =>
+            {
+                receivedCommand = command;
+                receivedCount++;
+            },
+            typedInputTracker);
         var errors = manager.RegisterAll(HotkeySettings.Defaults, layouts);
         Assert(errors.Count == 0, "Default global hotkeys can be registered.");
 
-        var sent = NativeMethods.SendChord(
+        var sent = NativeMethods.SendUnmarkedChord(
             NativeMethods.VkControl,
             NativeMethods.VkMenu,
             (ushort)Keys.S);
         Assert(sent, "Windows accepts the synthetic shortcut input.");
         PumpMessages(150);
         Assert(
-            receivedCommand?.Mode == TextSwitchMode.SelectedText &&
-            receivedCommand.TargetLayoutId is null,
-            "The Windows message loop receives the selected-text hotkey.");
+            receivedCommand is TextSwitchHotkeyCommand
+            {
+                Mode: TextSwitchMode.SelectedText,
+                TargetLayoutId: null
+            } && receivedCount == 1,
+            "The Windows message loop receives the selected-text hotkey exactly once.");
 
         var pauseSettings = HotkeySettings.Defaults;
         pauseSettings.SelectedText = HotkeyBinding.Create(HotkeyModifiers.None, Keys.Pause);
@@ -548,12 +1417,31 @@ internal static class Program
             pauseErrors.Count == 0,
             "Windows accepts Pause as a standalone registered global hotkey.");
 
+        var caseSettings = HotkeySettings.Defaults;
+        caseSettings.UpperCase = HotkeyBinding.Create(
+            HotkeyModifiers.None,
+            Keys.F10);
+        var caseErrors = manager.RegisterAll(caseSettings, layouts);
+        Assert(caseErrors.Count == 0, "A selected-text case hotkey can be registered.");
+
+        receivedCommand = null;
+        receivedCount = 0;
+        NativeMethods.SendUnmarkedChord((ushort)Keys.F10);
+        PumpMessages(150);
+        Assert(
+            receivedCommand is TextCaseHotkeyCommand
+            {
+                Mode: TextCaseMode.UpperCase
+            } && receivedCount == 1,
+            "The Windows message loop receives the UPPERCASE command exactly once.");
+
         var targetLayout = layouts.FirstOrDefault();
         if (targetLayout is not null)
         {
             var targetSettings = HotkeySettings.Defaults;
             targetSettings.TargetLayouts[targetLayout.Id] = new TargetLayoutHotkeys
             {
+                ActivateLayout = HotkeyBinding.Create(HotkeyModifiers.None, Keys.F5),
                 SelectedText = HotkeyBinding.Create(HotkeyModifiers.None, Keys.F8)
             };
             var targetErrors = manager.RegisterAll(targetSettings, layouts);
@@ -562,12 +1450,63 @@ internal static class Program
                 "A language-specific hotkey can be registered.");
 
             receivedCommand = null;
-            NativeMethods.SendChord((ushort)Keys.F8);
+            receivedCount = 0;
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F5);
             PumpMessages(150);
             Assert(
-                receivedCommand?.Mode == TextSwitchMode.SelectedText &&
-                receivedCommand.TargetLayoutId == targetLayout.Id,
+                receivedCommand is KeyboardLayoutHotkeyCommand layoutCommand &&
+                layoutCommand.TargetLayoutId == targetLayout.Id &&
+                receivedCount == 1,
+                "A direct layout hotkey carries its explicit target exactly once.");
+
+            receivedCommand = null;
+            receivedCount = 0;
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F8);
+            PumpMessages(150);
+            Assert(
+                receivedCommand is TextSwitchHotkeyCommand
+                {
+                    Mode: TextSwitchMode.SelectedText
+                } switchCommand &&
+                switchCommand.TargetLayoutId == targetLayout.Id &&
+                receivedCount == 1,
                 "A language-specific hotkey carries its explicit target layout.");
+        }
+
+        const int blockerId = 9127;
+        var blockerRegistered = NativeMethods.RegisterHotKey(
+            IntPtr.Zero,
+            blockerId,
+            HotkeyModifiers.Alt | HotkeyModifiers.NoRepeat,
+            (uint)Keys.X);
+        try
+        {
+            var exclusiveSettings = HotkeySettings.Defaults;
+            exclusiveSettings.SelectedText = HotkeyBinding.Create(
+                HotkeyModifiers.Alt,
+                Keys.X);
+            var exclusiveErrors = manager.RegisterAll(exclusiveSettings, layouts);
+            Assert(
+                exclusiveErrors.Count == 0,
+                "A conflicting global shortcut is captured by the exclusive hook.");
+
+            receivedCommand = null;
+            receivedCount = 0;
+            NativeMethods.SendUnmarkedChord(NativeMethods.VkMenu, (ushort)Keys.X);
+            PumpMessages(150);
+            Assert(
+                receivedCommand is TextSwitchHotkeyCommand
+                {
+                    Mode: TextSwitchMode.SelectedText
+                } && receivedCount == 1,
+                "The exclusive hook delivers Alt+X to NN Switch.");
+        }
+        finally
+        {
+            if (blockerRegistered)
+            {
+                NativeMethods.UnregisterHotKey(IntPtr.Zero, blockerId);
+            }
         }
     }
 
@@ -580,6 +1519,79 @@ internal static class Program
             observe?.Invoke();
             Thread.Sleep(observe is null ? 10 : 1);
         }
+    }
+
+    private static bool PumpMessagesUntil(
+        int timeoutMilliseconds,
+        Func<bool> condition)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (stopwatch.ElapsedMilliseconds < timeoutMilliseconds)
+        {
+            Application.DoEvents();
+            if (condition())
+            {
+                return true;
+            }
+
+            Thread.Sleep(1);
+        }
+
+        Application.DoEvents();
+        return condition();
+    }
+
+    private static bool ClipboardTextEquals(string expected)
+    {
+        try
+        {
+            return Clipboard.ContainsText() && Clipboard.GetText() == expected;
+        }
+        catch (ExternalException)
+        {
+            return false;
+        }
+    }
+
+    private static void EnsureWindowLayout(
+        Form form,
+        Control focusedControl,
+        InputLanguage inputLanguage,
+        KeyboardLayoutDescriptor expectedLayout,
+        IReadOnlyList<KeyboardLayoutDescriptor> layouts)
+    {
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            InputLanguage.CurrentInputLanguage = inputLanguage;
+            NativeMethods.PostMessage(
+                form.Handle,
+                NativeMethods.WmInputLanguageChangeRequest,
+                IntPtr.Zero,
+                expectedLayout.Handle);
+            focusedControl.Focus();
+            SetForegroundWindow(form.Handle);
+            PumpMessages(25);
+
+            var actual = KeyboardLayoutService.GetForWindow(form.Handle, layouts);
+            if (actual?.Id.Equals(
+                    expectedLayout.Id,
+                    StringComparison.OrdinalIgnoreCase) == true)
+            {
+                PumpMessages(75);
+                focusedControl.Focus();
+                SetForegroundWindow(form.Handle);
+                actual = KeyboardLayoutService.GetForWindow(form.Handle, layouts);
+                if (actual?.Id.Equals(
+                        expectedLayout.Id,
+                        StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    return;
+                }
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"Could not activate {expectedLayout.DisplayName} for the integration window.");
     }
 
     private static string? GetOptionValue(string[] args, string option)
@@ -616,7 +1628,173 @@ internal static class Program
         Console.WriteLine($"PASS: {message}");
     }
 
+    private sealed class CopyLineTextBox : TextBox
+    {
+        internal int CopyCommandCount;
+        internal int AllowedCopyCommandCount = int.MaxValue;
+        internal bool RedrawEnabled = true;
+        internal bool RejectNativeReplacement;
+
+        protected override void OnTextChanged(EventArgs eventArgs)
+        {
+            base.OnTextChanged(eventArgs);
+            SelectionLength = 0;
+        }
+
+        protected override bool ProcessCmdKey(ref Message message, Keys keyData)
+        {
+            if (keyData == (Keys.Control | Keys.C))
+            {
+                CopyCommandCount++;
+                if (CopyCommandCount > AllowedCopyCommandCount)
+                {
+                    return true;
+                }
+
+                if (SelectionLength == 0)
+                {
+                    Clipboard.SetText(Text);
+                    return true;
+                }
+            }
+
+            return base.ProcessCmdKey(ref message, keyData);
+        }
+
+        protected override void WndProc(ref Message message)
+        {
+            if (message.Msg == NativeMethods.WmSetredraw)
+            {
+                RedrawEnabled = message.WParam != IntPtr.Zero;
+            }
+
+            if (RejectNativeReplacement &&
+                message.Msg == NativeMethods.EmReplacesel)
+            {
+                return;
+            }
+
+            base.WndProc(ref message);
+        }
+    }
+
+    private sealed class BrowserLikeTextControl : Control
+    {
+        private int _selectionAnchor;
+        private int _selectionActive;
+
+        internal BrowserLikeTextControl()
+        {
+            SetStyle(ControlStyles.Selectable, true);
+            TabStop = true;
+        }
+
+        internal int AllowedCopyCommandCount = int.MaxValue;
+        internal int CopyCommandCount;
+        internal readonly List<string> Trace = new();
+
+        internal int CaretIndex => _selectionActive;
+
+        internal int SelectionLength =>
+            Math.Abs(_selectionActive - _selectionAnchor);
+
+        internal void SetTextAndCaret(string text, int caretIndex)
+        {
+            Text = text;
+            _selectionAnchor = Math.Clamp(caretIndex, 0, Text.Length);
+            _selectionActive = _selectionAnchor;
+        }
+
+        internal void SetTextAndSelection(string text, int start, int length)
+        {
+            Text = text;
+            _selectionAnchor = Math.Clamp(start, 0, Text.Length);
+            _selectionActive = Math.Clamp(
+                _selectionAnchor + length,
+                _selectionAnchor,
+                Text.Length);
+        }
+
+        protected override bool IsInputKey(Keys keyData) =>
+            (keyData & Keys.KeyCode) is Keys.Left or Keys.Right ||
+            base.IsInputKey(keyData);
+
+        protected override void OnKeyPress(KeyPressEventArgs eventArgs)
+        {
+            base.OnKeyPress(eventArgs);
+            if (char.IsControl(eventArgs.KeyChar))
+            {
+                return;
+            }
+
+            var selectionStart = Math.Min(_selectionAnchor, _selectionActive);
+            Trace.Add(
+                $"char:{eventArgs.KeyChar}:{_selectionAnchor}->{_selectionActive}");
+            Text = Text.Remove(selectionStart, SelectionLength)
+                .Insert(selectionStart, eventArgs.KeyChar.ToString());
+            _selectionAnchor = selectionStart + 1;
+            _selectionActive = _selectionAnchor;
+            eventArgs.Handled = true;
+        }
+
+        protected override bool ProcessCmdKey(ref Message message, Keys keyData)
+        {
+            if (keyData == (Keys.Control | Keys.C))
+            {
+                CopyCommandCount++;
+                Trace.Add(
+                    $"copy#{CopyCommandCount}:{_selectionAnchor}->{_selectionActive}");
+                if (CopyCommandCount > AllowedCopyCommandCount)
+                {
+                    return true;
+                }
+
+                var selectionStart = Math.Min(_selectionAnchor, _selectionActive);
+                if (SelectionLength > 0)
+                {
+                    Clipboard.SetText(Text.Substring(selectionStart, SelectionLength));
+                }
+
+                return true;
+            }
+
+            var keyCode = keyData & Keys.KeyCode;
+            if (keyCode is not Keys.Left and not Keys.Right)
+            {
+                return base.ProcessCmdKey(ref message, keyData);
+            }
+
+            var direction = keyCode == Keys.Left ? -1 : 1;
+            if ((keyData & Keys.Shift) != 0)
+            {
+                _selectionActive = Math.Clamp(
+                    _selectionActive + direction,
+                    0,
+                    Text.Length);
+                return true;
+            }
+
+            if (SelectionLength > 0)
+            {
+                _selectionActive = direction < 0
+                    ? Math.Min(_selectionAnchor, _selectionActive)
+                    : Math.Max(_selectionAnchor, _selectionActive);
+            }
+            else
+            {
+                _selectionActive = Math.Clamp(
+                    _selectionActive + direction,
+                    0,
+                    Text.Length);
+            }
+
+            _selectionAnchor = _selectionActive;
+            return true;
+        }
+    }
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr windowHandle);
+
 }

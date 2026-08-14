@@ -5,16 +5,21 @@ namespace INSwitch.Services;
 
 internal sealed class ClipboardSnapshot : IDisposable
 {
-    private const int RestoreAttempts = 10;
-    private const int RestoreRetryDelayMs = 15;
+    private const int RestoreAttempts = 30;
+    private const int RestoreRetryDelayMs = 5;
 
     private readonly DataObject? _data;
+    private readonly bool _clearOnRestore;
     private readonly List<IDisposable> _ownedData;
     private bool _disposed;
 
-    private ClipboardSnapshot(DataObject? data, List<IDisposable> ownedData)
+    private ClipboardSnapshot(
+        DataObject? data,
+        bool clearOnRestore,
+        List<IDisposable> ownedData)
     {
         _data = data;
+        _clearOnRestore = clearOnRestore;
         _ownedData = ownedData;
     }
 
@@ -29,11 +34,18 @@ internal sealed class ClipboardSnapshot : IDisposable
             var current = Clipboard.GetDataObject();
             if (current is null)
             {
-                snapshot = new ClipboardSnapshot(null, ownedData);
+                snapshot = new ClipboardSnapshot(null, clearOnRestore: true, ownedData);
                 return true;
             }
 
-            foreach (var format in current.GetFormats(autoConvert: false))
+            var formats = current.GetFormats(autoConvert: false);
+            if (formats.Length == 0)
+            {
+                snapshot = new ClipboardSnapshot(null, clearOnRestore: true, ownedData);
+                return true;
+            }
+
+            foreach (var format in formats)
             {
                 try
                 {
@@ -65,23 +77,37 @@ internal sealed class ClipboardSnapshot : IDisposable
             return false;
         }
 
-        snapshot = new ClipboardSnapshot(copiedFormats > 0 ? dataObject : null, ownedData);
+        if (copiedFormats == 0)
+        {
+            foreach (var item in ownedData)
+            {
+                item.Dispose();
+            }
+
+            snapshot = null!;
+            return false;
+        }
+
+        snapshot = new ClipboardSnapshot(dataObject, clearOnRestore: false, ownedData);
         return true;
     }
 
-    internal async Task RestoreAsync()
+    internal async Task<bool> RestoreAsync()
     {
-        if (_data is null)
-        {
-            return;
-        }
-
         for (var attempt = 0; attempt < RestoreAttempts; attempt++)
         {
             try
             {
-                Clipboard.SetDataObject(_data, copy: true);
-                return;
+                if (_clearOnRestore)
+                {
+                    Clipboard.Clear();
+                }
+                else
+                {
+                    Clipboard.SetDataObject(_data!, copy: true);
+                }
+
+                return true;
             }
             catch (ExternalException) when (attempt + 1 < RestoreAttempts)
             {
@@ -89,9 +115,11 @@ internal sealed class ClipboardSnapshot : IDisposable
             }
             catch (ExternalException)
             {
-                return;
+                return false;
             }
         }
+
+        return false;
     }
 
     public void Dispose()

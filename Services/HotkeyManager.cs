@@ -1,25 +1,48 @@
 using System.ComponentModel;
+using System.Runtime.InteropServices;
 using INSwitch.Interop;
 using INSwitch.Models;
 
 namespace INSwitch.Services;
 
-internal sealed record HotkeyCommand(
+internal abstract record HotkeyCommand(string DisplayName);
+
+internal sealed record TextSwitchHotkeyCommand(
     TextSwitchMode Mode,
     string? TargetLayoutId,
-    string DisplayName);
+    string CommandDisplayName) : HotkeyCommand(CommandDisplayName);
+
+internal sealed record TextCaseHotkeyCommand(
+    TextCaseMode Mode,
+    string CommandDisplayName) : HotkeyCommand(CommandDisplayName);
+
+internal sealed record KeyboardLayoutHotkeyCommand(
+    string TargetLayoutId,
+    string CommandDisplayName) : HotkeyCommand(CommandDisplayName);
 
 internal sealed class HotkeyManager : NativeWindow, IDisposable
 {
     private const int FirstHotkeyId = 1001;
 
     private readonly Action<HotkeyCommand> _onHotkey;
+    private readonly TypedInputTracker _typedInputTracker;
     private readonly Dictionary<int, HotkeyCommand> _commands = new();
+    private readonly Dictionary<int, ExclusiveHotkey> _exclusiveCommands = new();
+    private readonly Dictionary<uint, int> _pendingHotkeys = new();
+    private readonly NativeMethods.LowLevelKeyboardProc _keyboardHookCallback;
+    private readonly NativeMethods.LowLevelMouseProc _mouseHookCallback;
+    private IntPtr _keyboardHook;
+    private IntPtr _mouseHook;
     private bool _disposed;
 
-    internal HotkeyManager(Action<HotkeyCommand> onHotkey)
+    internal HotkeyManager(
+        Action<HotkeyCommand> onHotkey,
+        TypedInputTracker typedInputTracker)
     {
         _onHotkey = onHotkey;
+        _typedInputTracker = typedInputTracker;
+        _keyboardHookCallback = KeyboardHookCallback;
+        _mouseHookCallback = MouseHookCallback;
         CreateHandle(new CreateParams
         {
             Caption = "NN Switch Hotkeys",
@@ -39,9 +62,16 @@ internal sealed class HotkeyManager : NativeWindow, IDisposable
         {
             Register(
                 nextId++,
-                new HotkeyCommand(action.Mode, null, action.CommandName),
-                action.GetBinding(settings),
-                errors);
+                new TextSwitchHotkeyCommand(action.Mode, null, action.CommandName),
+                action.GetBinding(settings));
+        }
+
+        foreach (var action in TextCaseActions.All)
+        {
+            Register(
+                nextId++,
+                new TextCaseHotkeyCommand(action.Mode, action.CommandName),
+                action.GetBinding(settings));
         }
 
         foreach (var layout in layouts)
@@ -51,16 +81,49 @@ internal sealed class HotkeyManager : NativeWindow, IDisposable
                 continue;
             }
 
+            Register(
+                nextId++,
+                new KeyboardLayoutHotkeyCommand(
+                    layout.Id,
+                    $"Switch input language to {layout.DisplayName}"),
+                targetHotkeys.ActivateLayout);
+
             foreach (var action in TextSwitchActions.All)
             {
                 Register(
                     nextId++,
-                    new HotkeyCommand(
+                    new TextSwitchHotkeyCommand(
                         action.Mode,
                         layout.Id,
                         $"{layout.DisplayName}: {action.DisplayName.ToLowerInvariant()}"),
-                    action.GetBinding(targetHotkeys),
-                    errors);
+                    action.GetBinding(targetHotkeys));
+            }
+        }
+
+        if (_exclusiveCommands.Count == 0)
+        {
+            return errors;
+        }
+
+        var exclusiveHookInstalled = TryInstallExclusiveHook();
+        foreach (var (id, exclusive) in _exclusiveCommands)
+        {
+            if (NativeMethods.RegisterHotKey(
+                    Handle,
+                    id,
+                    exclusive.Binding.Modifiers | HotkeyModifiers.NoRepeat,
+                    (uint)exclusive.Binding.Key))
+            {
+                _commands[id] = exclusive.Command;
+                continue;
+            }
+
+            if (!exclusiveHookInstalled)
+            {
+                var error = new Win32Exception().Message;
+                errors.Add(
+                    $"{exclusive.Command.DisplayName}: " +
+                    $"{HotkeyFormatter.Format(exclusive.Binding)} ({error})");
             }
         }
 
@@ -78,6 +141,21 @@ internal sealed class HotkeyManager : NativeWindow, IDisposable
         }
 
         _commands.Clear();
+        _exclusiveCommands.Clear();
+        _pendingHotkeys.Clear();
+        if (_keyboardHook != IntPtr.Zero)
+        {
+            NativeMethods.UnhookWindowsHookEx(_keyboardHook);
+            _keyboardHook = IntPtr.Zero;
+        }
+
+        if (_mouseHook != IntPtr.Zero)
+        {
+            NativeMethods.UnhookWindowsHookEx(_mouseHook);
+            _mouseHook = IntPtr.Zero;
+        }
+
+        _typedInputTracker.SetPointerHookActive(active: false);
     }
 
     protected override void WndProc(ref Message message)
@@ -86,6 +164,14 @@ internal sealed class HotkeyManager : NativeWindow, IDisposable
             _commands.TryGetValue(message.WParam.ToInt32(), out var command))
         {
             _onHotkey(command);
+            return;
+        }
+
+        if (message.Msg == NativeMethods.WmAppExclusiveHotkey &&
+            _exclusiveCommands.TryGetValue(message.WParam.ToInt32(), out var exclusive))
+        {
+            _onHotkey(exclusive.Command);
+            return;
         }
 
         base.WndProc(ref message);
@@ -107,27 +193,135 @@ internal sealed class HotkeyManager : NativeWindow, IDisposable
     private void Register(
         int id,
         HotkeyCommand command,
-        HotkeyBinding binding,
-        ICollection<string> errors)
+        HotkeyBinding binding)
     {
         if (!binding.IsConfigured)
         {
             return;
         }
 
-        if (NativeMethods.RegisterHotKey(
-                Handle,
-                id,
-                binding.Modifiers | HotkeyModifiers.NoRepeat,
-                (uint)binding.Key))
+        _exclusiveCommands[id] = new ExclusiveHotkey(command, binding.Clone());
+    }
+
+    private bool TryInstallExclusiveHook()
+    {
+        _keyboardHook = NativeMethods.SetWindowsHookEx(
+            NativeMethods.WhKeyboardLl,
+            _keyboardHookCallback,
+            NativeMethods.GetModuleHandle(null),
+            0);
+        if (_keyboardHook == IntPtr.Zero)
         {
-            _commands[id] = command;
-            return;
+            return false;
         }
 
-        var error = new Win32Exception().Message;
-        errors.Add($"{command.DisplayName}: {HotkeyFormatter.Format(binding)} ({error})");
+        _mouseHook = NativeMethods.SetWindowsHookEx(
+            NativeMethods.WhMouseLl,
+            _mouseHookCallback,
+            NativeMethods.GetModuleHandle(null),
+            0);
+        _typedInputTracker.SetPointerHookActive(_mouseHook != IntPtr.Zero);
+        return true;
     }
+
+    private IntPtr KeyboardHookCallback(int code, IntPtr wParam, IntPtr lParam)
+    {
+        if (code >= 0)
+        {
+            var message = wParam.ToInt32();
+            var keyboardData = Marshal.PtrToStructure<NativeMethods.Kbdllhookstruct>(lParam);
+            if (keyboardData.ExtraInfo == NativeMethods.InjectedInputMarker)
+            {
+                return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
+            }
+
+            if (message is NativeMethods.WmKeyup or NativeMethods.WmSyskeyup)
+            {
+                if (_pendingHotkeys.Remove(keyboardData.VirtualKey, out var hotkeyId))
+                {
+                    NativeMethods.PostMessage(
+                        Handle,
+                        NativeMethods.WmAppExclusiveHotkey,
+                        new IntPtr(hotkeyId),
+                        IntPtr.Zero);
+                    return new IntPtr(1);
+                }
+
+                _typedInputTracker.ObserveKeyboardInput(message, keyboardData);
+            }
+            else if (message is NativeMethods.WmKeydown or NativeMethods.WmSyskeydown)
+            {
+                if (_pendingHotkeys.ContainsKey(keyboardData.VirtualKey))
+                {
+                    return new IntPtr(1);
+                }
+
+                var modifiers = GetPressedModifiers();
+                foreach (var (id, exclusive) in _exclusiveCommands)
+                {
+                    if ((uint)exclusive.Binding.Key != keyboardData.VirtualKey ||
+                        exclusive.Binding.Modifiers != modifiers)
+                    {
+                        continue;
+                    }
+
+                    _pendingHotkeys[keyboardData.VirtualKey] = id;
+                    return new IntPtr(1);
+                }
+
+                _typedInputTracker.ObserveKeyboardInput(message, keyboardData);
+            }
+        }
+
+        return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
+    }
+
+    private IntPtr MouseHookCallback(int code, IntPtr wParam, IntPtr lParam)
+    {
+        if (code >= 0 &&
+            wParam.ToInt32() is NativeMethods.WmLbuttondown or
+                NativeMethods.WmRbuttondown or
+                NativeMethods.WmMbuttondown or
+                NativeMethods.WmXbuttondown or
+                NativeMethods.WmMousewheel or
+                NativeMethods.WmMousehwheel)
+        {
+            _typedInputTracker.ObservePointerInput();
+        }
+
+        return NativeMethods.CallNextHookEx(_mouseHook, code, wParam, lParam);
+    }
+
+    private static HotkeyModifiers GetPressedModifiers()
+    {
+        var modifiers = HotkeyModifiers.None;
+        if (NativeMethods.IsKeyDown(NativeMethods.VkControl))
+        {
+            modifiers |= HotkeyModifiers.Control;
+        }
+
+        if (NativeMethods.IsKeyDown(NativeMethods.VkShift))
+        {
+            modifiers |= HotkeyModifiers.Shift;
+        }
+
+        if (NativeMethods.IsKeyDown(NativeMethods.VkMenu))
+        {
+            modifiers |= HotkeyModifiers.Alt;
+        }
+
+        if (NativeMethods.IsKeyDown(NativeMethods.VkLwin) ||
+            NativeMethods.IsKeyDown(NativeMethods.VkRwin))
+        {
+            modifiers |= HotkeyModifiers.Win;
+        }
+
+        return modifiers;
+    }
+
+    private sealed record ExclusiveHotkey(
+        HotkeyCommand Command,
+        HotkeyBinding Binding);
 }
 
 internal static class HotkeyFormatter

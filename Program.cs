@@ -5,9 +5,13 @@ static class Program
     [STAThread]
     static void Main()
     {
+        var testInstanceId = Environment.GetEnvironmentVariable("NN_SWITCH_TEST_INSTANCE");
+        var mutexName = string.IsNullOrWhiteSpace(testInstanceId)
+            ? @"Local\INSwitch_20F5C5CD-2EA4-4D6B-9C65-D5D436EF8B22"
+            : $@"Local\INSwitch_Test_{testInstanceId}";
         using var singleInstance = new Mutex(
             initiallyOwned: true,
-            name: @"Local\INSwitch_20F5C5CD-2EA4-4D6B-9C65-D5D436EF8B22",
+            name: mutexName,
             createdNew: out var isFirstInstance);
 
         if (!isFirstInstance)

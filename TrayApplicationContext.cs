@@ -12,6 +12,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly Icon _appIcon;
     private readonly HotkeyManager _hotkeyManager;
     private readonly TextSwitchService _textSwitchService;
+    private readonly TypedInputTracker _typedInputTracker;
     private IReadOnlyList<KeyboardLayoutDescriptor> _layouts;
     private readonly AppSettings _settings;
     private bool _exiting;
@@ -25,9 +26,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var hotkeysItem = new ToolStripMenuItem("Hotkeys...");
         hotkeysItem.Click += (_, _) => ShowHotkeysForm();
 
-        var switchTargetsItem = new ToolStripMenuItem("Switch to...");
-        switchTargetsItem.Click += (_, _) => ShowSwitchTargetsForm();
-
         var exitItem = new ToolStripMenuItem("Exit");
         exitItem.Click += (_, _) => ExitApplication();
 
@@ -38,7 +36,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _trayMenu.Items.AddRange(new ToolStripItem[]
         {
             hotkeysItem,
-            switchTargetsItem,
             new ToolStripSeparator(),
             exitItem
         });
@@ -53,12 +50,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
         };
         _notifyIcon.MouseClick += NotifyIconOnMouseClick;
 
+        _typedInputTracker = new TypedInputTracker(() => _layouts);
+
         _textSwitchService = new TextSwitchService(
             () => _settings,
             () => _layouts,
-            ShowNotification);
+            ShowNotification,
+            _typedInputTracker);
 
-        _hotkeyManager = new HotkeyManager(HandleHotkey);
+        _hotkeyManager = new HotkeyManager(HandleHotkey, _typedInputTracker);
 
         ApplyFunctionalState();
     }
@@ -70,7 +70,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         try
         {
-            using var form = new HotkeysForm(_settings.Hotkeys, _layouts)
+            using var form = new HotkeysForm(
+                _settings.Hotkeys,
+                _settings.SwitchTargets,
+                _layouts)
             {
                 Icon = _appIcon
             };
@@ -80,28 +83,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
 
             _settings.Hotkeys = form.Result;
+            _settings.SwitchTargets = form.SwitchTargetsResult;
             SaveSettings();
         }
         finally
         {
             ApplyFunctionalState();
         }
-    }
-
-    private void ShowSwitchTargetsForm()
-    {
-        RefreshLayouts();
-        using var form = new SwitchTargetsForm(_layouts, _settings.SwitchTargets)
-        {
-            Icon = _appIcon
-        };
-        if (form.ShowDialog() != DialogResult.OK)
-        {
-            return;
-        }
-
-        _settings.SwitchTargets = form.Result;
-        SaveSettings();
     }
 
     private void RefreshLayouts()
@@ -126,9 +114,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async void HandleHotkey(HotkeyCommand command)
     {
-        await _textSwitchService.SwitchAsync(
-            command.Mode,
-            targetLayoutId: command.TargetLayoutId);
+        switch (command)
+        {
+            case TextSwitchHotkeyCommand switchCommand:
+                await _textSwitchService.SwitchAsync(
+                    switchCommand.Mode,
+                    targetLayoutId: switchCommand.TargetLayoutId);
+                break;
+            case TextCaseHotkeyCommand caseCommand:
+                await _textSwitchService.ChangeSelectedTextCaseAsync(caseCommand.Mode);
+                break;
+            case KeyboardLayoutHotkeyCommand layoutCommand:
+                await _textSwitchService.ActivateLayoutAsync(layoutCommand.TargetLayoutId);
+                break;
+        }
     }
 
     private void NotifyIconOnMouseClick(object? sender, MouseEventArgs eventArgs)
