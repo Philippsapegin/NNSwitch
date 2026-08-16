@@ -52,6 +52,8 @@ internal sealed class HotkeySettings
 
     public HotkeyBinding SentenceCase { get; set; } = new();
 
+    public HotkeyBinding CycleLayout { get; set; } = new();
+
     public Dictionary<string, TargetLayoutHotkeys> TargetLayouts { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -63,6 +65,7 @@ internal sealed class HotkeySettings
         UpperCase = UpperCase.Clone(),
         LowerCase = LowerCase.Clone(),
         SentenceCase = SentenceCase.Clone(),
+        CycleLayout = CycleLayout.Clone(),
         TargetLayouts = TargetLayouts.ToDictionary(
             pair => pair.Key,
             pair => pair.Value.Clone(),
@@ -93,7 +96,7 @@ internal sealed class TargetLayoutHotkeys
 
 internal sealed class AppSettings
 {
-    internal const int CurrentSchemaVersion = 3;
+    internal const int CurrentSchemaVersion = 4;
 
     public int SchemaVersion { get; set; }
 

@@ -473,6 +473,80 @@ internal sealed class TextSwitchService
         }
     }
 
+    internal async Task<bool> CycleLayoutAsync(bool showFailure = true)
+    {
+        await _operationGate.WaitAsync();
+
+        try
+        {
+            var foregroundWindow = NativeMethods.GetForegroundWindow();
+            if (foregroundWindow == IntPtr.Zero)
+            {
+                NotifyFailure(showFailure, "No active window was found.");
+                return false;
+            }
+
+            var layouts = _getLayouts();
+            if (layouts.Count < 2)
+            {
+                NotifyFailure(showFailure, "At least two keyboard layouts are required.");
+                return false;
+            }
+
+            var current = KeyboardLayoutService.GetForWindow(foregroundWindow, layouts);
+            var currentIndex = current is null
+                ? -1
+                : FindLayoutIndex(layouts, current.Id);
+            var target = layouts[(currentIndex + 1) % layouts.Count];
+
+            if (!await WaitForModifierKeysAsync())
+            {
+                NotifyFailure(showFailure, "Release the shortcut keys and try again.");
+                return false;
+            }
+
+            if (NativeMethods.GetForegroundWindow() != foregroundWindow)
+            {
+                NotifyFailure(showFailure, "The active window changed. Try the command again.");
+                return false;
+            }
+
+            _typedInputTracker.Reset();
+            if (!KeyboardLayoutService.ActivateForWindow(foregroundWindow, target))
+            {
+                NotifyFailure(showFailure, "The active application rejected the keyboard layout change.");
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception exception)
+        {
+            ErrorLog.Write(exception);
+            NotifyFailure(showFailure, "Keyboard layout switching failed. Details were written to error.log.");
+            return false;
+        }
+        finally
+        {
+            _operationGate.Release();
+        }
+    }
+
+    private static int FindLayoutIndex(
+        IReadOnlyList<KeyboardLayoutDescriptor> layouts,
+        string layoutId)
+    {
+        for (var index = 0; index < layouts.Count; index++)
+        {
+            if (layouts[index].Id.Equals(layoutId, StringComparison.OrdinalIgnoreCase))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
     private TrackedSwitchResult TrySwitchTrackedLastToken(
         IntPtr foregroundWindow,
         KeyboardLayoutDescriptor detectedSource,

@@ -34,6 +34,14 @@ run it.
 The application runs entirely from the system tray, with no main window and no
 taskbar button.
 
+## What's new in v1.3.1
+
+- A narrower, cleaner single-column Hotkeys window with layout-dependent settings
+  grouped together.
+- Clearer hotkey capture and dropdown focus behavior, with shortcuts remaining
+  active while the settings window is open.
+- An optional cyclic input-language shortcut, empty by default.
+
 ## What's new in v1.3
 
 Compared with v1.2, this release adds:
@@ -58,8 +66,8 @@ Compared with v1.2, this release adds:
   sentence case without changing the keyboard layout.
 - **Per-layout targets** — selects a separate destination layout for every
   layout installed in Windows.
-- **Direct layout hotkeys** — switches the active input language to any installed
-  layout without changing text or touching the clipboard.
+- **Direct layout hotkeys** — cycles through installed input languages or switches
+  directly to a specific layout without changing text or touching the clipboard.
 - **Direct text-conversion hotkeys** — sends selected text, the last word, or the
   active field directly to a specific installed layout.
 - **Any hotkey** — accepts a key combination or a single key such as `Pause`,
@@ -90,8 +98,9 @@ Compared with v1.2, this release adds:
 
 The three universal layout-switching actions use the default correction targets
 shown in the same window. The case actions operate only on the current selection.
-The layout-specific section provides an empty input-language hotkey followed by
-three empty direct-target text actions for every installed layout.
+The layout-specific section starts with an empty cyclic input-language hotkey,
+then provides an empty direct switch and three empty direct-target text actions
+for every installed layout.
 
 ## Tray menu
 
@@ -99,10 +108,10 @@ three empty direct-target text actions for every installed layout.
 
 Opens one window with two simultaneously visible sections:
 
-- **Universal** contains default correction targets, mapped-target text switching,
-  and selected-text case tools.
-- **By installed layout** starts with plain input-language switching for every
-  installed layout, followed by direct text-conversion actions for those layouts.
+- **Universal** contains mapped-target text switching and selected-text case tools.
+- **By installed layout** contains the default correction-target mapping, followed
+  by cyclic/direct input-language switching and separated text-conversion groups
+  for each installed layout.
 
 To change a hotkey:
 
@@ -129,7 +138,7 @@ Releases all global hotkeys and exits the process.
 | Change selected text to lowercase | Empty |
 | Change selected text to sentence case | Empty |
 
-Case, direct layout, and direct text-conversion hotkeys are empty by default.
+Case, cyclic/direct layout, and direct text-conversion hotkeys are empty by default.
 
 ## Upgrading
 

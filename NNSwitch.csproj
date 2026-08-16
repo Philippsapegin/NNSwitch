@@ -11,7 +11,7 @@
     <Product>NN Switch</Product>
     <Description>A lightweight keyboard layout switcher for Windows.</Description>
     <Authors>Philippsapegin</Authors>
-    <VersionPrefix>1.3.0</VersionPrefix>
+    <VersionPrefix>1.3.1</VersionPrefix>
     <RepositoryUrl>https://github.com/Philippsapegin/NNSwitch</RepositoryUrl>
     <ApplicationIcon>NN.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>

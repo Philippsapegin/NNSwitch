@@ -1,6 +1,7 @@
 using System.Text;
 using System.Diagnostics;
 using System.Globalization;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using INSwitch.Interop;
 using INSwitch.Models;
@@ -69,6 +70,9 @@ internal static class Program
             !settings.Hotkeys.LowerCase.IsConfigured &&
             !settings.Hotkeys.SentenceCase.IsConfigured,
             "Selected-text case hotkeys default to empty.");
+        Assert(
+            !settings.Hotkeys.CycleLayout.IsConfigured,
+            "The cyclic layout hotkey defaults to empty.");
 
         foreach (var source in layouts)
         {
@@ -269,25 +273,86 @@ internal static class Program
     {
         var settings = new AppSettings();
         SettingsNormalizer.Normalize(settings, layouts);
+        settings.Hotkeys.CycleLayout = HotkeyBinding.Create(
+            HotkeyModifiers.None,
+            Keys.F4);
         var source = layouts[0];
         var newTargetId = layouts
             .FirstOrDefault(layout => !layout.Id.Equals(
                 source.Id,
                 StringComparison.OrdinalIgnoreCase))?.Id ?? string.Empty;
 
+        var captureStates = new List<bool>();
         using var form = new HotkeysForm(
             settings.Hotkeys,
             settings.SwitchTargets,
-            layouts);
+            layouts,
+            captureStates.Add);
+        form.Show();
+        Application.DoEvents();
         var targetGrid = form.Controls.Find(
                 "TargetMappingGrid",
                 searchAllChildren: true)
             .OfType<DataGridView>()
             .Single();
+        var universalGrid = form.Controls.Find(
+                "UniversalHotkeyGrid",
+                searchAllChildren: true)
+            .OfType<DataGridView>()
+            .Single();
+        var layoutGrid = form.Controls.Find(
+                "LayoutHotkeyGrid",
+                searchAllChildren: true)
+            .OfType<DataGridView>()
+            .Single();
+        var layoutTitle = form.Controls.Find(
+                "LayoutSectionTitle",
+                searchAllChildren: true)
+            .OfType<Label>()
+            .Single();
+        Assert(
+            universalGrid.Columns.Count == 2 &&
+            universalGrid.Columns[0].Name == "Action" &&
+            universalGrid.Columns[1].Name == "Hotkey",
+            "The universal Hotkeys table contains only Action and Hotkey columns.");
+        Assert(
+            universalGrid.Rows.Cast<DataGridViewRow>().Any(row =>
+                Equals(row.Cells["Action"].Value, "Selected to UPPERCASE")),
+            "Case actions are labelled as selected-text transformations.");
+        Assert(
+            Equals(layoutGrid.Rows[0].Cells["Action"].Value, "Cycle input language"),
+            "The cyclic switch is the first layout-generated hotkey.");
+        Assert(
+            universalGrid.Top < layoutTitle.Top &&
+            layoutTitle.Top < targetGrid.Top &&
+            targetGrid.Top < layoutGrid.Top,
+            "Correction targets sit under the installed-layout heading and before its hotkeys.");
+        Assert(
+            form.ClientSize.Width == 560 && form.MinimumSize.Width == 500,
+            "The Hotkeys window is one third narrower and can be reduced further.");
         var sourceRow = targetGrid.Rows
             .Cast<DataGridViewRow>()
             .Single(row => row.Tag as string == source.Id);
         sourceRow.Cells["Target"].Value = newTargetId;
+
+        var targetCell = sourceRow.Cells["Target"];
+        targetGrid.CurrentCell = targetCell;
+        targetGrid.BeginEdit(selectAll: true);
+        RaiseCellMouseDown(universalGrid, columnIndex: 0, rowIndex: 0);
+        Assert(
+            targetGrid.CurrentCell is null &&
+            Equals(targetCell.Value, newTargetId),
+            "Clicking outside a correction-target dropdown dismisses it without losing its value.");
+
+        RaiseCellClick(
+            universalGrid,
+            universalGrid.Columns["Hotkey"]?.Index ??
+                throw new InvalidOperationException("The Hotkey column is missing."),
+            rowIndex: 0);
+        Assert(
+            captureStates.LastOrDefault() &&
+            string.IsNullOrEmpty(universalGrid.Rows[0].Cells["Hotkey"].Value as string),
+            "Clicking a hotkey cell activates capture and clears the current shortcut.");
 
         var saveButton = form.Controls.Find(
                 "SaveHotkeysButton",
@@ -300,10 +365,14 @@ internal static class Program
             form.SwitchTargetsResult[source.Id] == newTargetId,
             "The unified Hotkeys window saves default correction targets.");
         Assert(
-            form.Result.SelectedText.Key == settings.Hotkeys.SelectedText.Key &&
+            !form.Result.SelectedText.IsConfigured &&
             form.Result.LastWord.Key == settings.Hotkeys.LastWord.Key &&
-            form.Result.ActiveField.Key == settings.Hotkeys.ActiveField.Key,
-            "The unified Hotkeys window saves universal hotkeys in the same action.");
+            form.Result.ActiveField.Key == settings.Hotkeys.ActiveField.Key &&
+            form.Result.CycleLayout.Key == Keys.F4,
+            "Save keeps the active cell value and all other universal hotkeys in one action.");
+        Assert(
+            captureStates.SequenceEqual(new[] { true, false }),
+            "Saving an active hotkey cell ends capture cleanly.");
     }
 
     private static void TestRussianEnglishConversion(IReadOnlyList<KeyboardLayoutDescriptor> layouts)
@@ -360,6 +429,22 @@ internal static class Program
             settings.SwitchTargets,
             layouts);
         SaveFormImage(hotkeysForm, Path.Combine(outputDirectory, "hotkeys.png"));
+        hotkeysForm.Show();
+        Application.DoEvents();
+        var universalGrid = hotkeysForm.Controls.Find(
+                "UniversalHotkeyGrid",
+                searchAllChildren: true)
+            .OfType<DataGridView>()
+            .Single();
+        RaiseCellClick(
+            universalGrid,
+            universalGrid.Columns["Hotkey"]?.Index ??
+                throw new InvalidOperationException("The Hotkey column is missing."),
+            rowIndex: 0);
+        Application.DoEvents();
+        SaveFormImage(
+            hotkeysForm,
+            Path.Combine(outputDirectory, "hotkeys-active-cell.png"));
 
         using var trayMenu = new ContextMenuStrip { ShowCheckMargin = false };
         trayMenu.Items.AddRange(new ToolStripItem[]
@@ -412,6 +497,8 @@ internal static class Program
             HotkeyBinding.Create(HotkeyModifiers.None, Keys.F11);
         testSettings.Hotkeys.SentenceCase =
             HotkeyBinding.Create(HotkeyModifiers.None, Keys.F12);
+        testSettings.Hotkeys.CycleLayout =
+            HotkeyBinding.Create(HotkeyModifiers.None, Keys.F4);
         testSettings.Hotkeys.TargetLayouts[english.Id].ActivateLayout =
             HotkeyBinding.Create(HotkeyModifiers.None, Keys.F5);
         var russianTarget = layouts.FirstOrDefault(layout => layout.TwoLetterLanguage == "ru");
@@ -504,6 +591,25 @@ internal static class Program
             Assert(
                 ClipboardTextEquals(clipboardSentinel),
                 "A layout hotkey never touches the system clipboard.");
+
+            var englishIndex = layouts.ToList().FindIndex(layout =>
+                layout.Id.Equals(english.Id, StringComparison.OrdinalIgnoreCase));
+            var expectedCycledLayout = layouts[(englishIndex + 1) % layouts.Count];
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F4);
+            var cyclicLayoutChanged = PumpMessagesUntil(
+                2000,
+                () => KeyboardLayoutService.GetForWindow(form.Handle, layouts)?.Id
+                    .Equals(expectedCycledLayout.Id, StringComparison.OrdinalIgnoreCase) == true);
+            PumpMessages(100);
+            Assert(
+                cyclicLayoutChanged,
+                "The cyclic hotkey advances to the next installed keyboard layout.");
+            Assert(
+                textBox.Text == layoutOnlyText &&
+                textBox.SelectionStart == textBox.TextLength &&
+                textBox.SelectionLength == 0 &&
+                ClipboardTextEquals(clipboardSentinel),
+                "The cyclic hotkey changes neither text, caret, nor clipboard.");
 
             textBox.Text = "Ghbdtn? vbh!";
             InputLanguage.CurrentInputLanguage = englishInputLanguage;
@@ -1435,6 +1541,48 @@ internal static class Program
             } && receivedCount == 1,
             "The Windows message loop receives the UPPERCASE command exactly once.");
 
+        var cycleAppSettings = new AppSettings();
+        SettingsNormalizer.Normalize(cycleAppSettings, layouts);
+        cycleAppSettings.Hotkeys.CycleLayout = HotkeyBinding.Create(
+            HotkeyModifiers.None,
+            Keys.F4);
+        var cycleErrors = manager.RegisterAll(cycleAppSettings.Hotkeys, layouts);
+        Assert(cycleErrors.Count == 0, "A cyclic layout hotkey can be registered.");
+
+        receivedCommand = null;
+        receivedCount = 0;
+        using (var hotkeysForm = new HotkeysForm(
+                   cycleAppSettings.Hotkeys,
+                   cycleAppSettings.SwitchTargets,
+                   layouts,
+                   manager.SetCommandHandlingSuspended))
+        {
+            hotkeysForm.Show();
+            Application.DoEvents();
+            NativeMethods.SendUnmarkedChord((ushort)Keys.F4);
+            PumpMessages(150);
+            hotkeysForm.Close();
+        }
+        Assert(
+            receivedCommand is CycleKeyboardLayoutHotkeyCommand && receivedCount == 1,
+            "Configured hotkeys remain active while the Hotkeys window is open.");
+
+        manager.SetCommandHandlingSuspended(suspended: true);
+        receivedCommand = null;
+        receivedCount = 0;
+        NativeMethods.SendUnmarkedChord((ushort)Keys.F4);
+        PumpMessages(150);
+        Assert(
+            receivedCommand is null && receivedCount == 0,
+            "Hotkey capture temporarily passes configured shortcuts through.");
+
+        manager.SetCommandHandlingSuspended(suspended: false);
+        NativeMethods.SendUnmarkedChord((ushort)Keys.F4);
+        PumpMessages(150);
+        Assert(
+            receivedCommand is CycleKeyboardLayoutHotkeyCommand && receivedCount == 1,
+            "Configured shortcuts resume without rebuilding the hotkey manager.");
+
         var targetLayout = layouts.FirstOrDefault();
         if (targetLayout is not null)
         {
@@ -1508,6 +1656,47 @@ internal static class Program
                 NativeMethods.UnregisterHotKey(IntPtr.Zero, blockerId);
             }
         }
+    }
+
+    private static void RaiseCellClick(
+        DataGridView grid,
+        int columnIndex,
+        int rowIndex)
+    {
+        var method = typeof(DataGridView).GetMethod(
+            "OnCellClick",
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            types: new[] { typeof(DataGridViewCellEventArgs) },
+            modifiers: null) ??
+            throw new InvalidOperationException("Could not find DataGridView.OnCellClick.");
+        method.Invoke(grid, new object[]
+        {
+            new DataGridViewCellEventArgs(columnIndex, rowIndex)
+        });
+    }
+
+    private static void RaiseCellMouseDown(
+        DataGridView grid,
+        int columnIndex,
+        int rowIndex)
+    {
+        var method = typeof(DataGridView).GetMethod(
+            "OnCellMouseDown",
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            types: new[] { typeof(DataGridViewCellMouseEventArgs) },
+            modifiers: null) ??
+            throw new InvalidOperationException("Could not find DataGridView.OnCellMouseDown.");
+        method.Invoke(grid, new object[]
+        {
+            new DataGridViewCellMouseEventArgs(
+                columnIndex,
+                rowIndex,
+                localX: 1,
+                localY: 1,
+                new MouseEventArgs(MouseButtons.Left, 1, 1, 1, 0))
+        });
     }
 
     private static void PumpMessages(int milliseconds, Action? observe = null)

@@ -6,7 +6,8 @@ namespace INSwitch.UI;
 
 internal sealed class HotkeysForm : Form
 {
-    private const int HotkeyColumnIndex = 2;
+    private const string HotkeyColumnName = "Hotkey";
+    private const string TargetColumnName = "Target";
 
     private readonly IReadOnlyList<KeyboardLayoutDescriptor> _layouts;
     private readonly List<HotkeyRow> _rows;
@@ -15,8 +16,10 @@ internal sealed class HotkeysForm : Form
     private readonly DataGridView _targetGrid;
     private readonly Label _statusLabel;
     private readonly Label _validationLabel;
+    private readonly Action<bool>? _setHotkeyCaptureActive;
     private HotkeyRow? _capturingRow;
     private DataGridViewRow? _capturingGridRow;
+    private bool _hotkeyCaptureActive;
 
     internal HotkeySettings Result { get; private set; }
 
@@ -25,9 +28,11 @@ internal sealed class HotkeysForm : Form
     internal HotkeysForm(
         HotkeySettings current,
         IReadOnlyDictionary<string, string> currentTargets,
-        IReadOnlyList<KeyboardLayoutDescriptor> layouts)
+        IReadOnlyList<KeyboardLayoutDescriptor> layouts,
+        Action<bool>? setHotkeyCaptureActive = null)
     {
         _layouts = layouts;
+        _setHotkeyCaptureActive = setHotkeyCaptureActive;
         Result = current.Clone();
         SwitchTargetsResult = new Dictionary<string, string>(
             currentTargets,
@@ -35,8 +40,8 @@ internal sealed class HotkeysForm : Form
         _rows = BuildRows(current, layouts);
 
         Text = "Hotkeys — NN Switch";
-        ClientSize = new Size(1120, CalculateInitialClientHeight(layouts.Count));
-        MinimumSize = new Size(900, 470);
+        ClientSize = new Size(560, CalculateInitialClientHeight(layouts.Count));
+        MinimumSize = new Size(500, 600);
         StartPosition = FormStartPosition.CenterScreen;
         ShowInTaskbar = false;
         KeyPreview = true;
@@ -45,6 +50,7 @@ internal sealed class HotkeysForm : Form
         {
             Text = "Hotkeys",
             Font = new Font("Segoe UI Semibold", 14F),
+            ForeColor = DarkTheme.Accent,
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 4)
         };
@@ -58,15 +64,16 @@ internal sealed class HotkeysForm : Form
             Margin = new Padding(0, 0, 0, 12)
         };
 
-        _universalGrid = CreateGrid();
-        _layoutGrid = CreateGrid();
+        _universalGrid = CreateGrid("UniversalHotkeyGrid", includeTarget: false);
+        _layoutGrid = CreateGrid("LayoutHotkeyGrid", includeTarget: true);
         _targetGrid = CreateTargetGrid(layouts, currentTargets);
         PopulateGrid(
             _universalGrid,
-            _rows.Where(row => row.TargetLayoutId is null));
+            _rows.Where(row => !row.IsLayoutSection));
         PopulateGrid(
             _layoutGrid,
-            _rows.Where(row => row.TargetLayoutId is not null));
+            _rows.Where(row => row.IsLayoutSection));
+        AddLayoutGroupSpacing(_layoutGrid, layouts.Count);
 
         var sections = CreateSections(
             _targetGrid,
@@ -147,29 +154,41 @@ internal sealed class HotkeysForm : Form
         content.Controls.Add(buttons, 0, 4);
         Controls.Add(content);
 
+        WireOutsideClickHandlers(content);
+        MouseDown += OutsideControlOnMouseDown;
+        Deactivate += (_, _) => FinishActiveEditors();
+        FormClosed += (_, _) => FinishActiveEditors();
+
         CancelButton = cancelButton;
         DarkTheme.Apply(this);
         DarkTheme.StyleGrid(_universalGrid);
         DarkTheme.StyleGrid(_layoutGrid);
         DarkTheme.StyleGrid(_targetGrid);
+        _layoutGrid.GridColor = DarkTheme.Background;
         DarkTheme.EnableAccentHover(saveButton);
+        Shown += (_, _) => ClearAllGridSelections();
     }
 
     private static int CalculateInitialClientHeight(int layoutCount)
     {
-        const int universalSectionHeight = 360;
-        const int layoutSectionChromeHeight = 49;
         const int hotkeyHeaderHeight = 30;
         const int hotkeyRowHeight = 28;
-        const int formChromeHeight = 128;
+        const int targetRowHeight = 30;
+        const int groupGapHeight = 8;
+        const int labelsAndFormChromeHeight = 220;
 
-        var layoutSectionHeight = layoutSectionChromeHeight +
-            hotkeyHeaderHeight +
-            (layoutCount * 4 * hotkeyRowHeight);
-        return Math.Clamp(
-            Math.Max(universalSectionHeight, layoutSectionHeight) + formChromeHeight,
-            508,
-            760);
+        var universalGridHeight = hotkeyHeaderHeight +
+            ((TextSwitchActions.All.Count + TextCaseActions.All.Count) * hotkeyRowHeight);
+        var targetGridHeight = hotkeyHeaderHeight + (layoutCount * targetRowHeight);
+        var layoutGridHeight = hotkeyHeaderHeight +
+            ((1 + (layoutCount * 4)) * hotkeyRowHeight) +
+            groupGapHeight;
+        var desiredHeight = labelsAndFormChromeHeight +
+            universalGridHeight +
+            targetGridHeight +
+            layoutGridHeight;
+        var workingHeight = Screen.PrimaryScreen?.WorkingArea.Height ?? 900;
+        return Math.Clamp(desiredHeight, 720, Math.Max(720, workingHeight - 70));
     }
 
     private void ShowStatus(string message)
@@ -232,20 +251,20 @@ internal sealed class HotkeysForm : Form
         }
 
         _capturingRow.Binding = HotkeyBinding.Create(modifiers, key);
-        _capturingGridRow.Cells[HotkeyColumnIndex].Value =
+        var hotkeyCell = _capturingGridRow.Cells[HotkeyColumnName];
+        hotkeyCell.Value =
             HotkeyFormatter.Format(_capturingRow.Binding);
-        _capturingGridRow.Cells[HotkeyColumnIndex].Style.ForeColor =
-            DarkTheme.Foreground;
-        _capturingRow = null;
-        _capturingGridRow = null;
+        hotkeyCell.Style.ForeColor = DarkTheme.Foreground;
+        _capturingGridRow.DataGridView?.InvalidateCell(hotkeyCell);
         ClearFeedback();
         return true;
     }
 
-    private DataGridView CreateGrid()
+    private DataGridView CreateGrid(string name, bool includeTarget)
     {
         var grid = new DataGridView
         {
+            Name = name,
             Dock = DockStyle.Fill,
             AllowUserToAddRows = false,
             AllowUserToDeleteRows = false,
@@ -264,22 +283,29 @@ internal sealed class HotkeysForm : Form
             ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing
         };
 
+        if (includeTarget)
+        {
+            grid.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "Scope",
+                HeaderText = "Target",
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
+                FillWeight = 38F,
+                SortMode = DataGridViewColumnSortMode.NotSortable
+            });
+        }
+
         grid.Columns.Add(new DataGridViewTextBoxColumn
         {
-            HeaderText = "Target",
-            AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
-            FillWeight = 38F,
-            SortMode = DataGridViewColumnSortMode.NotSortable
-        });
-        grid.Columns.Add(new DataGridViewTextBoxColumn
-        {
+            Name = "Action",
             HeaderText = "Action",
             AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
-            FillWeight = 34F,
+            FillWeight = includeTarget ? 34F : 72F,
             SortMode = DataGridViewColumnSortMode.NotSortable
         });
         grid.Columns.Add(new DataGridViewTextBoxColumn
         {
+            Name = HotkeyColumnName,
             HeaderText = "Hotkey",
             AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
             FillWeight = 28F,
@@ -287,10 +313,12 @@ internal sealed class HotkeysForm : Form
         });
 
         grid.CellClick += GridOnCellClick;
+        grid.CellMouseDown += HotkeyGridOnCellMouseDown;
+        grid.CellPainting += HotkeyGridOnCellPainting;
         return grid;
     }
 
-    private static DataGridView CreateTargetGrid(
+    private DataGridView CreateTargetGrid(
         IReadOnlyList<KeyboardLayoutDescriptor> layouts,
         IReadOnlyDictionary<string, string> currentTargets)
     {
@@ -317,22 +345,9 @@ internal sealed class HotkeysForm : Form
 
             eventArgs.ThrowException = false;
         };
-        grid.CellClick += (_, eventArgs) =>
-        {
-            if (eventArgs.RowIndex < 0 || eventArgs.ColumnIndex != 1)
-            {
-                return;
-            }
-
-            grid.BeginEdit(selectAll: true);
-            if (grid.EditingControl is DataGridViewComboBoxEditingControl comboBox)
-            {
-                comboBox.BackColor = DarkTheme.Background;
-                comboBox.ForeColor = DarkTheme.Foreground;
-                comboBox.FlatStyle = FlatStyle.Flat;
-                comboBox.DroppedDown = true;
-            }
-        };
+        grid.CellClick += TargetGridOnCellClick;
+        grid.CellMouseDown += TargetGridOnCellMouseDown;
+        grid.Leave += (_, _) => FinishTargetEditing();
 
         grid.Columns.Add(new DataGridViewTextBoxColumn
         {
@@ -352,7 +367,7 @@ internal sealed class HotkeysForm : Form
 
         grid.Columns.Add(new DataGridViewComboBoxColumn
         {
-            Name = "Target",
+            Name = TargetColumnName,
             HeaderText = "Correct text to",
             DataSource = choices,
             DisplayMember = nameof(TargetChoice.Name),
@@ -387,100 +402,50 @@ internal sealed class HotkeysForm : Form
         {
             Text = "Universal",
             Font = new Font("Segoe UI Semibold", 12F),
+            ForeColor = DarkTheme.Accent,
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 6)
         };
-        var targetTitle = new Label
+
+        var layoutTitle = new Label
         {
-            Text = "Default correction targets",
-            ForeColor = DarkTheme.Muted,
+            Name = "LayoutSectionTitle",
+            Text = "By installed layout",
+            Font = new Font("Segoe UI Semibold", 12F),
+            ForeColor = DarkTheme.Accent,
             AutoSize = true,
-            Margin = new Padding(0, 0, 0, 4)
-        };
-        var universalHotkeysTitle = new Label
-        {
-            Text = "Hotkeys",
-            ForeColor = DarkTheme.Muted,
-            AutoSize = true,
-            Margin = new Padding(0, 8, 0, 4)
+            Margin = new Padding(0, 14, 0, 6)
         };
 
-        var targetGridHeight = Math.Clamp(
-            targetGrid.ColumnHeadersHeight +
-            (targetGrid.Rows.Count * targetGrid.RowTemplate.Height) + 2,
-            92,
-            160);
-        var universalSection = new TableLayoutPanel
+        var universalGridHeight = GetGridContentHeight(universalGrid);
+        var targetGridHeight = GetGridContentHeight(targetGrid);
+        var sections = new TableLayoutPanel
         {
             ColumnCount = 1,
             RowCount = 5,
             Dock = DockStyle.Fill,
-            Margin = new Padding(0),
-            Padding = new Padding(0, 0, 12, 0)
-        };
-        universalSection.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        universalSection.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        universalSection.RowStyles.Add(new RowStyle(SizeType.Absolute, targetGridHeight));
-        universalSection.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        universalSection.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-        universalSection.Controls.Add(universalTitle, 0, 0);
-        universalSection.Controls.Add(targetTitle, 0, 1);
-        universalSection.Controls.Add(targetGrid, 0, 2);
-        universalSection.Controls.Add(universalHotkeysTitle, 0, 3);
-        universalSection.Controls.Add(universalGrid, 0, 4);
-
-        var layoutTitle = new Label
-        {
-            Text = "By installed layout",
-            Font = new Font("Segoe UI Semibold", 12F),
-            AutoSize = true,
-            Margin = new Padding(0, 0, 0, 6)
-        };
-        var layoutDescription = new Label
-        {
-            Text = "Plain layout switching first, then text conversion to a specific layout.",
-            ForeColor = DarkTheme.Muted,
-            AutoSize = true,
-            MaximumSize = new Size(560, 0),
-            Margin = new Padding(0, 0, 0, 4)
-        };
-        var layoutSection = new TableLayoutPanel
-        {
-            ColumnCount = 1,
-            RowCount = 3,
-            Dock = DockStyle.Fill,
-            Margin = new Padding(0),
-            Padding = new Padding(12, 0, 0, 0)
-        };
-        layoutSection.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layoutSection.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layoutSection.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-        layoutSection.Controls.Add(layoutTitle, 0, 0);
-        layoutSection.Controls.Add(layoutDescription, 0, 1);
-        layoutSection.Controls.Add(layoutGrid, 0, 2);
-
-        var separator = new Panel
-        {
-            Dock = DockStyle.Fill,
-            Margin = new Padding(0),
-            BackColor = DarkTheme.Button
-        };
-
-        var sections = new TableLayoutPanel
-        {
-            ColumnCount = 3,
-            RowCount = 1,
-            Dock = DockStyle.Fill,
             Margin = new Padding(0)
         };
-        sections.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 46F));
-        sections.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1F));
-        sections.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 54F));
-        sections.Controls.Add(universalSection, 0, 0);
-        sections.Controls.Add(separator, 1, 0);
-        sections.Controls.Add(layoutSection, 2, 0);
+        sections.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        sections.RowStyles.Add(new RowStyle(SizeType.Absolute, universalGridHeight));
+        sections.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        sections.RowStyles.Add(new RowStyle(SizeType.Absolute, targetGridHeight));
+        sections.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        universalGrid.Margin = new Padding(0);
+        targetGrid.Margin = new Padding(0);
+        layoutGrid.Margin = new Padding(0, 8, 0, 0);
+        sections.Controls.Add(universalTitle, 0, 0);
+        sections.Controls.Add(universalGrid, 0, 1);
+        sections.Controls.Add(layoutTitle, 0, 2);
+        sections.Controls.Add(targetGrid, 0, 3);
+        sections.Controls.Add(layoutGrid, 0, 4);
         return sections;
     }
+
+    private static int GetGridContentHeight(DataGridView grid) =>
+        grid.ColumnHeadersHeight +
+        grid.Rows.Cast<DataGridViewRow>().Sum(row => row.Height + row.DividerHeight) +
+        2;
 
     private static void PopulateGrid(
         DataGridView grid,
@@ -488,30 +453,50 @@ internal sealed class HotkeysForm : Form
     {
         foreach (var row in rows)
         {
-            var rowIndex = grid.Rows.Add(
-                row.Scope,
-                row.DisplayName,
-                HotkeyFormatter.Format(row.Binding));
+            var rowIndex = grid.Columns.Contains("Scope")
+                ? grid.Rows.Add(
+                    row.Scope,
+                    row.DisplayName,
+                    HotkeyFormatter.Format(row.Binding))
+                : grid.Rows.Add(
+                    row.DisplayName,
+                    HotkeyFormatter.Format(row.Binding));
             grid.Rows[rowIndex].Tag = row;
+        }
+    }
+
+    private static void AddLayoutGroupSpacing(DataGridView grid, int layoutCount)
+    {
+        var separatorIndex = 1 + layoutCount;
+        if (separatorIndex >= 0 && separatorIndex <= grid.Rows.Count)
+        {
+            grid.Rows.Insert(separatorIndex, 1);
+            var separator = grid.Rows[separatorIndex];
+            separator.Height = 8;
+            separator.MinimumHeight = 3;
+            separator.ReadOnly = true;
+            separator.DefaultCellStyle.BackColor = DarkTheme.Background;
+            separator.DefaultCellStyle.SelectionBackColor = DarkTheme.Background;
         }
     }
 
     private void GridOnCellClick(object? sender, DataGridViewCellEventArgs eventArgs)
     {
-        if (eventArgs.RowIndex < 0 || eventArgs.ColumnIndex != HotkeyColumnIndex)
+        if (sender is not DataGridView grid)
         {
             return;
         }
 
-        if (sender is not DataGridView grid)
+        var hotkeyColumnIndex = GetColumnIndex(grid, HotkeyColumnName);
+        if (eventArgs.RowIndex < 0 || eventArgs.ColumnIndex != hotkeyColumnIndex)
         {
             return;
         }
 
         if (_capturingGridRow is not null)
         {
-            _capturingGridRow.Cells[HotkeyColumnIndex].Style.ForeColor =
-                DarkTheme.Foreground;
+            _capturingGridRow.DataGridView?.InvalidateCell(
+                _capturingGridRow.Cells[HotkeyColumnName]);
         }
 
         var gridRow = grid.Rows[eventArgs.RowIndex];
@@ -523,15 +508,171 @@ internal sealed class HotkeysForm : Form
         _capturingRow = row;
         _capturingGridRow = gridRow;
         row.Binding = new HotkeyBinding();
-        var cell = gridRow.Cells[HotkeyColumnIndex];
+        var cell = gridRow.Cells[HotkeyColumnName];
         cell.Value = string.Empty;
-        cell.Style.ForeColor = DarkTheme.Accent;
-        ShowStatus($"Press a shortcut for {row.FullName}.");
+        cell.Style.ForeColor = DarkTheme.Foreground;
+        SetHotkeyCaptureActive(active: true);
+        ClearFeedback();
+        grid.InvalidateCell(cell);
         grid.Focus();
+    }
+
+    private void HotkeyGridOnCellMouseDown(
+        object? sender,
+        DataGridViewCellMouseEventArgs eventArgs)
+    {
+        FinishTargetEditing();
+        if (sender is not DataGridView grid ||
+            eventArgs.RowIndex < 0 ||
+            eventArgs.ColumnIndex != GetColumnIndex(grid, HotkeyColumnName))
+        {
+            FinishHotkeyCapture();
+        }
+    }
+
+    private void HotkeyGridOnCellPainting(
+        object? sender,
+        DataGridViewCellPaintingEventArgs eventArgs)
+    {
+        if (_capturingGridRow is null ||
+            sender is not DataGridView grid ||
+            _capturingGridRow.DataGridView != grid ||
+            eventArgs.RowIndex != _capturingGridRow.Index ||
+            eventArgs.ColumnIndex != GetColumnIndex(grid, HotkeyColumnName))
+        {
+            return;
+        }
+
+        eventArgs.Paint(
+            eventArgs.CellBounds,
+            eventArgs.PaintParts & ~DataGridViewPaintParts.Border);
+        var border = Rectangle.Inflate(eventArgs.CellBounds, -1, -1);
+        using var pen = new Pen(DarkTheme.Accent, 2F);
+        eventArgs.Graphics?.DrawRectangle(pen, border);
+        eventArgs.Handled = true;
+    }
+
+    private void TargetGridOnCellClick(object? sender, DataGridViewCellEventArgs eventArgs)
+    {
+        if (sender is not DataGridView grid || eventArgs.RowIndex < 0)
+        {
+            return;
+        }
+
+        if (eventArgs.ColumnIndex != GetColumnIndex(grid, TargetColumnName))
+        {
+            BeginInvoke(FinishTargetEditing);
+            return;
+        }
+
+        grid.BeginEdit(selectAll: true);
+        if (grid.EditingControl is DataGridViewComboBoxEditingControl comboBox)
+        {
+            comboBox.BackColor = DarkTheme.Background;
+            comboBox.ForeColor = DarkTheme.Foreground;
+            comboBox.FlatStyle = FlatStyle.Flat;
+            comboBox.DroppedDown = true;
+        }
+    }
+
+    private void TargetGridOnCellMouseDown(
+        object? sender,
+        DataGridViewCellMouseEventArgs eventArgs)
+    {
+        FinishHotkeyCapture();
+        if (sender is not DataGridView grid ||
+            eventArgs.RowIndex < 0 ||
+            eventArgs.ColumnIndex != GetColumnIndex(grid, TargetColumnName))
+        {
+            FinishTargetEditing();
+        }
+    }
+
+    private void WireOutsideClickHandlers(Control root)
+    {
+        foreach (Control child in root.Controls)
+        {
+            if (child is DataGridView)
+            {
+                continue;
+            }
+
+            child.MouseDown += OutsideControlOnMouseDown;
+            WireOutsideClickHandlers(child);
+        }
+    }
+
+    private void OutsideControlOnMouseDown(object? sender, MouseEventArgs eventArgs) =>
+        FinishActiveEditors();
+
+    private void FinishActiveEditors()
+    {
+        FinishTargetEditing();
+        FinishHotkeyCapture();
+    }
+
+    private void FinishTargetEditing()
+    {
+        if (_targetGrid.EditingControl is DataGridViewComboBoxEditingControl comboBox)
+        {
+            comboBox.DroppedDown = false;
+        }
+
+        _targetGrid.EndEdit();
+        _targetGrid.ClearSelection();
+        _targetGrid.CurrentCell = null;
+        _targetGrid.Invalidate();
+    }
+
+    private void FinishHotkeyCapture()
+    {
+        if (_capturingGridRow is null)
+        {
+            return;
+        }
+
+        var grid = _capturingGridRow.DataGridView;
+        var cell = _capturingGridRow.Cells[HotkeyColumnName];
+        _capturingRow = null;
+        _capturingGridRow = null;
+        SetHotkeyCaptureActive(active: false);
+        ClearFeedback();
+        if (grid is not null)
+        {
+            grid.ClearSelection();
+            grid.CurrentCell = null;
+            grid.InvalidateCell(cell);
+        }
+    }
+
+    private void SetHotkeyCaptureActive(bool active)
+    {
+        if (_hotkeyCaptureActive == active)
+        {
+            return;
+        }
+
+        _hotkeyCaptureActive = active;
+        _setHotkeyCaptureActive?.Invoke(active);
+    }
+
+    private static int GetColumnIndex(DataGridView grid, string columnName) =>
+        grid.Columns[columnName]?.Index ?? -1;
+
+    private void ClearAllGridSelections()
+    {
+        foreach (var grid in new[] { _universalGrid, _targetGrid, _layoutGrid })
+        {
+            grid.ClearSelection();
+            grid.CurrentCell = null;
+        }
+
+        ActiveControl = null;
     }
 
     private void RestoreDefaults()
     {
+        FinishActiveEditors();
         var defaults = HotkeySettings.Defaults;
         foreach (var row in _rows)
         {
@@ -545,19 +686,17 @@ internal sealed class HotkeysForm : Form
             if (gridRow.Tag is string sourceId &&
                 defaultSettings.SwitchTargets.TryGetValue(sourceId, out var targetId))
             {
-                gridRow.Cells["Target"].Value = targetId;
+                gridRow.Cells[TargetColumnName].Value = targetId;
             }
         }
 
-        _capturingRow = null;
-        _capturingGridRow = null;
         RefreshHotkeyCells();
         ShowStatus("Defaults restored. Case and layout-specific hotkeys are empty.");
     }
 
     private void SaveButtonOnClick(object? sender, EventArgs eventArgs)
     {
-        _targetGrid.EndEdit();
+        FinishActiveEditors();
         var duplicate = _rows
             .Where(row => row.Binding.IsConfigured)
             .GroupBy(
@@ -573,6 +712,7 @@ internal sealed class HotkeysForm : Form
 
         var result = new HotkeySettings
         {
+            CycleLayout = FindCycleLayout().Binding.Clone(),
             TargetLayouts = new Dictionary<string, TargetLayoutHotkeys>(
                 StringComparer.OrdinalIgnoreCase)
         };
@@ -616,6 +756,9 @@ internal sealed class HotkeysForm : Form
     private HotkeyRow FindCase(TextCaseMode mode) =>
         _rows.Single(row => row.CaseAction?.Mode == mode);
 
+    private HotkeyRow FindCycleLayout() =>
+        _rows.Single(row => row.IsCycleLayout);
+
     private HotkeyRow FindTarget(string layoutId, TextSwitchMode mode) =>
         _rows.Single(row =>
             row.TargetLayoutId?.Equals(layoutId, StringComparison.OrdinalIgnoreCase) == true &&
@@ -633,7 +776,7 @@ internal sealed class HotkeysForm : Form
         {
             if (row.Tag is string sourceId)
             {
-                result[sourceId] = row.Cells["Target"].Value as string ?? string.Empty;
+                result[sourceId] = row.Cells[TargetColumnName].Value as string ?? string.Empty;
             }
         }
 
@@ -651,9 +794,9 @@ internal sealed class HotkeysForm : Form
                     continue;
                 }
 
-                gridRow.Cells[HotkeyColumnIndex].Value =
+                gridRow.Cells[HotkeyColumnName].Value =
                     HotkeyFormatter.Format(row.Binding);
-                gridRow.Cells[HotkeyColumnIndex].Style.ForeColor =
+                gridRow.Cells[HotkeyColumnName].Style.ForeColor =
                     DarkTheme.Foreground;
             }
         }
@@ -672,6 +815,8 @@ internal sealed class HotkeysForm : Form
                 action,
                 null,
                 false,
+                false,
+                false,
                 null,
                 action.GetBinding(current).Clone()));
         }
@@ -680,13 +825,25 @@ internal sealed class HotkeysForm : Form
         {
             var action = TextCaseActions.All[index];
             rows.Add(new HotkeyRow(
-                index == 0 ? "Text case" : string.Empty,
+                string.Empty,
                 null,
                 action,
+                false,
+                false,
                 false,
                 null,
                 action.GetBinding(current).Clone()));
         }
+
+        rows.Add(new HotkeyRow(
+            string.Empty,
+            null,
+            null,
+            false,
+            true,
+            true,
+            null,
+            current.CycleLayout.Clone()));
 
         foreach (var layout in layouts)
         {
@@ -697,6 +854,8 @@ internal sealed class HotkeysForm : Form
                 layout.DisplayName,
                 null,
                 null,
+                true,
+                false,
                 true,
                 layout.Id,
                 target.ActivateLayout.Clone()));
@@ -715,6 +874,8 @@ internal sealed class HotkeysForm : Form
                     action,
                     null,
                     false,
+                    false,
+                    true,
                     layout.Id,
                     action.GetBinding(target).Clone()));
             }
@@ -730,6 +891,8 @@ internal sealed class HotkeysForm : Form
             TextSwitchAction? switchAction,
             TextCaseAction? caseAction,
             bool isLayoutActivation,
+            bool isCycleLayout,
+            bool isLayoutSection,
             string? targetLayoutId,
             HotkeyBinding binding)
         {
@@ -737,6 +900,8 @@ internal sealed class HotkeysForm : Form
             SwitchAction = switchAction;
             CaseAction = caseAction;
             IsLayoutActivation = isLayoutActivation;
+            IsCycleLayout = isCycleLayout;
+            IsLayoutSection = isLayoutSection;
             TargetLayoutId = targetLayoutId;
             Binding = binding;
         }
@@ -749,9 +914,14 @@ internal sealed class HotkeysForm : Form
 
         internal bool IsLayoutActivation { get; }
 
+        internal bool IsCycleLayout { get; }
+
+        internal bool IsLayoutSection { get; }
+
         internal string DisplayName =>
             SwitchAction?.DisplayName ??
-            CaseAction?.DisplayName ??
+            (CaseAction is not null ? $"Selected to {CaseAction.DisplayName}" : null) ??
+            (IsCycleLayout ? "Cycle input language" : null) ??
             (IsLayoutActivation ? "Switch input language" : string.Empty);
 
         internal string? TargetLayoutId { get; }
@@ -763,6 +933,11 @@ internal sealed class HotkeysForm : Form
             if (CaseAction is not null)
             {
                 return CaseAction.GetBinding(defaults).Clone();
+            }
+
+            if (IsCycleLayout)
+            {
+                return defaults.CycleLayout.Clone();
             }
 
             return TargetLayoutId is null && SwitchAction is not null

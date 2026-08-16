@@ -20,6 +20,9 @@ internal sealed record KeyboardLayoutHotkeyCommand(
     string TargetLayoutId,
     string CommandDisplayName) : HotkeyCommand(CommandDisplayName);
 
+internal sealed record CycleKeyboardLayoutHotkeyCommand(
+    string CommandDisplayName) : HotkeyCommand(CommandDisplayName);
+
 internal sealed class HotkeyManager : NativeWindow, IDisposable
 {
     private const int FirstHotkeyId = 1001;
@@ -33,6 +36,7 @@ internal sealed class HotkeyManager : NativeWindow, IDisposable
     private readonly NativeMethods.LowLevelMouseProc _mouseHookCallback;
     private IntPtr _keyboardHook;
     private IntPtr _mouseHook;
+    private bool _commandHandlingSuspended;
     private bool _disposed;
 
     internal HotkeyManager(
@@ -74,6 +78,11 @@ internal sealed class HotkeyManager : NativeWindow, IDisposable
                 action.GetBinding(settings));
         }
 
+        Register(
+            nextId++,
+            new CycleKeyboardLayoutHotkeyCommand("Cycle input language"),
+            settings.CycleLayout);
+
         foreach (var layout in layouts)
         {
             if (!settings.TargetLayouts.TryGetValue(layout.Id, out var targetHotkeys))
@@ -106,43 +115,37 @@ internal sealed class HotkeyManager : NativeWindow, IDisposable
         }
 
         var exclusiveHookInstalled = TryInstallExclusiveHook();
-        foreach (var (id, exclusive) in _exclusiveCommands)
-        {
-            if (NativeMethods.RegisterHotKey(
-                    Handle,
-                    id,
-                    exclusive.Binding.Modifiers | HotkeyModifiers.NoRepeat,
-                    (uint)exclusive.Binding.Key))
-            {
-                _commands[id] = exclusive.Command;
-                continue;
-            }
-
-            if (!exclusiveHookInstalled)
-            {
-                var error = new Win32Exception().Message;
-                errors.Add(
-                    $"{exclusive.Command.DisplayName}: " +
-                    $"{HotkeyFormatter.Format(exclusive.Binding)} ({error})");
-            }
-        }
+        RegisterFallbackHotkeys(exclusiveHookInstalled, errors);
 
         return errors;
     }
 
-    internal void UnregisterAll()
+    internal void SetCommandHandlingSuspended(bool suspended)
     {
-        if (Handle != IntPtr.Zero)
+        if (_disposed || _commandHandlingSuspended == suspended)
         {
-            foreach (var id in _commands.Keys)
-            {
-                NativeMethods.UnregisterHotKey(Handle, id);
-            }
+            return;
         }
 
-        _commands.Clear();
+        _commandHandlingSuspended = suspended;
+        _pendingHotkeys.Clear();
+        if (suspended)
+        {
+            UnregisterFallbackHotkeys();
+            return;
+        }
+
+        RegisterFallbackHotkeys(
+            exclusiveHookInstalled: _keyboardHook != IntPtr.Zero,
+            errors: null);
+    }
+
+    internal void UnregisterAll()
+    {
+        UnregisterFallbackHotkeys();
         _exclusiveCommands.Clear();
         _pendingHotkeys.Clear();
+        _commandHandlingSuspended = false;
         if (_keyboardHook != IntPtr.Zero)
         {
             NativeMethods.UnhookWindowsHookEx(_keyboardHook);
@@ -161,6 +164,7 @@ internal sealed class HotkeyManager : NativeWindow, IDisposable
     protected override void WndProc(ref Message message)
     {
         if (message.Msg == NativeMethods.WmHotkey &&
+            !_commandHandlingSuspended &&
             _commands.TryGetValue(message.WParam.ToInt32(), out var command))
         {
             _onHotkey(command);
@@ -168,6 +172,7 @@ internal sealed class HotkeyManager : NativeWindow, IDisposable
         }
 
         if (message.Msg == NativeMethods.WmAppExclusiveHotkey &&
+            !_commandHandlingSuspended &&
             _exclusiveCommands.TryGetValue(message.WParam.ToInt32(), out var exclusive))
         {
             _onHotkey(exclusive.Command);
@@ -235,6 +240,12 @@ internal sealed class HotkeyManager : NativeWindow, IDisposable
                 return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
             }
 
+            if (_commandHandlingSuspended)
+            {
+                _typedInputTracker.ObserveKeyboardInput(message, keyboardData);
+                return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
+            }
+
             if (message is NativeMethods.WmKeyup or NativeMethods.WmSyskeyup)
             {
                 if (_pendingHotkeys.Remove(keyboardData.VirtualKey, out var hotkeyId))
@@ -274,6 +285,51 @@ internal sealed class HotkeyManager : NativeWindow, IDisposable
         }
 
         return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
+    }
+
+    private void RegisterFallbackHotkeys(
+        bool exclusiveHookInstalled,
+        ICollection<string>? errors)
+    {
+        if (_commandHandlingSuspended || Handle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        UnregisterFallbackHotkeys();
+        foreach (var (id, exclusive) in _exclusiveCommands)
+        {
+            if (NativeMethods.RegisterHotKey(
+                    Handle,
+                    id,
+                    exclusive.Binding.Modifiers | HotkeyModifiers.NoRepeat,
+                    (uint)exclusive.Binding.Key))
+            {
+                _commands[id] = exclusive.Command;
+                continue;
+            }
+
+            if (!exclusiveHookInstalled && errors is not null)
+            {
+                var error = new Win32Exception().Message;
+                errors.Add(
+                    $"{exclusive.Command.DisplayName}: " +
+                    $"{HotkeyFormatter.Format(exclusive.Binding)} ({error})");
+            }
+        }
+    }
+
+    private void UnregisterFallbackHotkeys()
+    {
+        if (Handle != IntPtr.Zero)
+        {
+            foreach (var id in _commands.Keys)
+            {
+                NativeMethods.UnregisterHotKey(Handle, id);
+            }
+        }
+
+        _commands.Clear();
     }
 
     private IntPtr MouseHookCallback(int code, IntPtr wParam, IntPtr lParam)

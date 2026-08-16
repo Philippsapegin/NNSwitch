@@ -77,6 +77,12 @@ internal static class SettingsNormalizer
             changed = true;
         }
 
+        if (settings.Hotkeys.CycleLayout is null)
+        {
+            settings.Hotkeys.CycleLayout = defaults.CycleLayout;
+            changed = true;
+        }
+
         if (settings.Hotkeys.TargetLayouts is null)
         {
             settings.Hotkeys.TargetLayouts =

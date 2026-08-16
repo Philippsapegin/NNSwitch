@@ -66,30 +66,33 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void ShowHotkeysForm()
     {
         RefreshLayouts();
-        _hotkeyManager.UnregisterAll();
-
+        DialogResult result;
+        using var form = new HotkeysForm(
+            _settings.Hotkeys,
+            _settings.SwitchTargets,
+            _layouts,
+            _hotkeyManager.SetCommandHandlingSuspended)
+        {
+            Icon = _appIcon
+        };
         try
         {
-            using var form = new HotkeysForm(
-                _settings.Hotkeys,
-                _settings.SwitchTargets,
-                _layouts)
-            {
-                Icon = _appIcon
-            };
-            if (form.ShowDialog() != DialogResult.OK)
-            {
-                return;
-            }
-
-            _settings.Hotkeys = form.Result;
-            _settings.SwitchTargets = form.SwitchTargetsResult;
-            SaveSettings();
+            result = form.ShowDialog();
         }
         finally
         {
-            ApplyFunctionalState();
+            _hotkeyManager.SetCommandHandlingSuspended(suspended: false);
         }
+
+        if (result != DialogResult.OK)
+        {
+            return;
+        }
+
+        _settings.Hotkeys = form.Result;
+        _settings.SwitchTargets = form.SwitchTargetsResult;
+        SaveSettings();
+        ApplyFunctionalState();
     }
 
     private void RefreshLayouts()
@@ -126,6 +129,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 break;
             case KeyboardLayoutHotkeyCommand layoutCommand:
                 await _textSwitchService.ActivateLayoutAsync(layoutCommand.TargetLayoutId);
+                break;
+            case CycleKeyboardLayoutHotkeyCommand:
+                await _textSwitchService.CycleLayoutAsync();
                 break;
         }
     }
